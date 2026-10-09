@@ -1,0 +1,30 @@
+# Go
+/bin/
+*.test
+*.out
+
+# Node / frontend
+node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/coverage/
+
+# Python (the session runner in the Spark runtime image, its tests)
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# JVM (the small Java helpers built into the Spark runtime image)
+target/
+*.class
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local env files (never commit credentials)
+.env
+.env.*
+!.env.example
