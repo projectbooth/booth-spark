@@ -1,0 +1,134 @@
+name: Integration
+
+# Layer 3 (contracts/testing-strategy.md, ADR 0024): real-cluster integration tests on kind. Runs on
+# merge to main, nightly, by hand, and on pull requests: ADR 0110 merges each build step only with a
+# green Integration run on its PR's exact head SHA, and a pull_request run is that run (a
+# workflow_dispatch can't target a PR before the workflow exists on main). See
+# test/integration/README.md for what each job covers and what it does not.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "20 8 * * *" # nightly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# kind and its node image are pinned (docs/design-v0.md item 9): kind v0.33.0's own release notes
+# list this digest for Kubernetes 1.35.8. kind's default CNI (kindnet) enforces NetworkPolicy, which
+# the run-isolation tests in later steps rely on, as booth-pipeline's Integration does.
+env:
+  KIND_VERSION: v0.33.0
+  KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+
+jobs:
+  standins:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Authenticated pulls get a much higher Docker Hub rate limit than anonymous ones -- docker
+      # build and kind's own node image both pull from docker.io. Guarded so forks and Dependabot
+      # (neither receives these org secrets) are skipped rather than failing. Copied from booth-core
+      # (its PR #11).
+      - uses: docker/login-action@v3
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: helm/kind-action@v1
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          cluster_name: booth-spark-ci
+
+      - uses: azure/setup-helm@v4
+
+      - name: Build and load the booth-spark image
+        run: |
+          docker build -t booth-spark:ci .
+          kind load docker-image booth-spark:ci --name booth-spark-ci
+
+      - name: Deploy with a stand-in PostgreSQL and booth-core's CRD
+        run: test/integration/deploy-standins.sh booth-spark:ci
+
+      - name: Verify
+        run: test/integration/verify.sh
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          kubectl -n booth-spark get all
+          kubectl -n booth-spark describe pods | tail -60
+          kubectl -n booth-spark logs deployment/booth-spark --tail=200 || true
+
+  real-core:
+    # The install path a user actually takes: a real Keycloak and a real booth-core, which provisions
+    # the database from this chart's BoothModule, signs the iframe assertion and mints workload
+    # tokens. booth-core is built at a pinned commit, not its moving master
+    # (contracts/testing-strategy.md); bump CORE_REF deliberately, together with
+    # test/integration/fixtures/boothmodule-crd.yaml (vendored from the same commit).
+    #   CORE_REF f631bd2: booth-core master, 2026-10-09 (bundled Keycloak and Ingress merged; both off
+    #   here, as core's own kind-deploy runs them)
+    runs-on: ubuntu-24.04
+    env:
+      CORE_REF: f631bd2cde1991492676649945dac226a7410f90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: projectbooth/booth-core
+          ref: ${{ env.CORE_REF }}
+          path: booth-core
+
+      - uses: helm/kind-action@v1
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          cluster_name: booth-spark-realcore
+
+      - uses: azure/setup-helm@v4
+
+      - name: The vendored CRD is booth-core's at CORE_REF
+        run: diff -u booth-core/charts/booth-core/crds/booth.projectbooth.io_boothmodules.yaml test/integration/fixtures/boothmodule-crd.yaml
+
+      - name: Build and load booth-core and booth-spark images
+        run: |
+          # dependency build (not update) installs exactly what core's Chart.lock pins.
+          helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+          helm dependency build booth-core/charts/booth-core
+          docker build -t booth-core:ci booth-core
+          docker build -t booth-spark:ci .
+          kind load docker-image booth-core:ci booth-spark:ci --name booth-spark-realcore
+
+      - name: Deploy Keycloak, booth-core and booth-spark
+        run: test/integration/deploy-realcore.sh booth-core booth-core:ci booth-spark:ci
+
+      - name: Verify (including the REAL_CORE checks)
+        env:
+          REAL_CORE: "1"
+        run: test/integration/verify.sh
+
+      - name: "Identity (docs/design-v0.md item 2): /v1 with real Keycloak and workload tokens, the iframe path with core's real assertion"
+        run: test/integration/identity.sh
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n booth-system logs deployment/booth-core --tail=150 || true
+          kubectl get boothmodules -A -o yaml || true
+          kubectl -n booth-spark get secrets || true
+          kubectl -n booth-spark describe pods | tail -60
+          kubectl -n booth-spark logs deployment/booth-spark --tail=200 || true
+          kubectl -n keycloak logs deploy/keycloak --tail=60 || true

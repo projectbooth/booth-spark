@@ -1,0 +1,34 @@
+{{- include "booth-spark.checks" . }}
+# Registers booth-spark with booth-core's module registry (ADR 0019): the BoothModule CRD is the
+# only thing core reads to know this module exists (contracts/module-manifest.md). Uses booth-core's
+# own CRD type (booth.projectbooth.io/v1alpha1), which that chart installs.
+#
+# iframe-proxy (ADR 0005, contracts/ui-integration.md): the module's own UI and, from step 2, the
+# Spark UI are served by this backend inside the shell's iframe. Manage nav group (ADR 0017, the
+# agent brief). No adminNavPath: one view for every role, with actions gated by role inside it.
+apiVersion: booth.projectbooth.io/v1alpha1
+kind: BoothModule
+metadata:
+  name: spark
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  id: spark
+  displayName: Spark
+  icon: zap
+  version: {{ .Chart.AppVersion | quote }}
+  contractVersion: "0.1.0"
+  hasOwnUi: true
+  uiIntegrationMode: iframe-proxy
+  navGroup: manage
+  navPath: /spark
+  healthCheckPath: /healthz
+  {{- if .Values.postgres.provisionedByCore }}
+  # ADR 0053/0054: ask booth-core for this module's own PostgreSQL database and role, delivered as
+  # the Secret `booth-database-credentials`. Left out only when the operator supplies their own.
+  database:
+    enabled: true
+  {{- end }}
+  serviceRef:
+    name: {{ include "booth-spark.fullname" . }}
+    port: {{ .Values.service.port }}

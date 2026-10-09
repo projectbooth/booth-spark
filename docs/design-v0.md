@@ -460,3 +460,40 @@ NetworkPolicy), and deploys Keycloak and a **real booth-core** built from a pinn
 4. Sessions, statements and idle shutdown.
 5. Data access: the token agent and the database sidecar, then the lakehouse and storage.
 6. The UI and the operations doc.
+
+## As built: step 1 (scaffold, CI, identity), 2026-10-09
+
+Ruled as ADR 0110. Built as items 2 and 9 describe, with these differences. Each one is deliberate,
+and each is covered by a test.
+
+- **Two "who am I" endpoints that item 6 doesn't list:** `GET /v1/me` and, on the iframe side,
+  `GET /ui/api/me`. Each returns what the module derived from the caller's verified credential
+  (subject, workspace, role, operator, workload, and whether `submit.minRole` lets them submit).
+  Integration uses them to prove both identity paths against a real core. They are additive within
+  `v1`.
+- **`/v1`'s verifier is built on first use** (`auth.Lazy`). The module starts, and stays healthy,
+  while the identity provider is still coming up, as booth-core does. Until discovery succeeds, `/v1`
+  answers 503, not 401, because the caller's token may well be fine. Configuration errors that
+  discovery can't fix still stop startup: a key URL without an issuer, or a workload issuer equal to
+  the OIDC issuer.
+- **A workload token's subject must be `<kind>:<id>`.** A token from core's workload issuer with a
+  person-shaped subject is refused rather than treated as a person, because core never mints one
+  (ADR 0058).
+- **The access log never writes a query string.** Core's iframe entry URL carries its navigation
+  token there. Integration checks that nothing token-shaped is logged.
+- **The ValidatingAdmissionPolicy check works against live discovery.** It looks for the
+  `admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy` kind, which a live cluster lists.
+  Helm's offline `template` lists no kind-level APIs, so offline renders (the contract tests) pass
+  `--api-versions` exactly as a 1.30+ cluster would. One contract test renders without it to prove
+  the refusal. The standins job proves the check passes on a real cluster.
+- **Integration also runs on `pull_request`.** ADR 0110 merges each step only with a green
+  Integration run on its PR's exact head SHA. A `workflow_dispatch` can't target a PR until the
+  workflow exists on `main`, and a `pull_request` run gives every PR that run automatically.
+- **No Kubernetes API access yet.** The backend's ServiceAccount has no rules, and neither it nor the
+  pod mounts a token. Step 3 adds exactly item 3's fenced rights, with the exact-rules test.
+- **Pinned for Integration:**
+  - booth-core at `f631bd2` (master, 2026-10-09). The CRD is vendored from the same commit, and the
+    job checks they are byte-identical.
+  - kind v0.33.0 with `kindest/node:v1.35.8@sha256:07b2536e…`.
+  - Keycloak `26.0@sha256:09a381c7…`, `postgres:16-alpine@sha256:721873c3…`, and
+    `curlimages/curl:8.17.0@sha256:935d9100…`.

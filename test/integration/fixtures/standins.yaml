@@ -1,0 +1,48 @@
+# Throwaway PostgreSQL for the stand-in integration job, standing in for the shared platform
+# database (ADR 0014). Test fixture only: fixed credentials, no persistence. The real-core job
+# replaces it with the database booth-core provisions, which is the authoritative check; this job
+# stays because it isolates the module from core. Image pinned by digest (postgres:16-alpine, the
+# same digest as hack/docker-compose.emulators.yml).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: booth-spark-db
+type: Opaque
+stringData:
+  dsn: postgres://booth:booth-test@postgres:5432/booth_spark?sslmode=disable
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+          env:
+            - {name: POSTGRES_USER, value: booth}
+            - {name: POSTGRES_PASSWORD, value: booth-test}
+            - {name: POSTGRES_DB, value: booth_spark}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "booth", "-d", "booth_spark"]
+            initialDelaySeconds: 3
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports:
+    - port: 5432

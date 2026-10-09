@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "booth-spark.fullname" . }}
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "booth-spark.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "booth-spark.selectorLabels" . | nindent 8 }}
+        booth.projectbooth.io/module: spark
+    spec:
+      serviceAccountName: {{ include "booth-spark.serviceAccountName" . }}
+      # No Kubernetes API access in this step (serviceaccount.yaml).
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: booth-spark
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BOOTH_HTTP_ADDR
+              value: ":8080"
+            - name: BOOTH_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "booth-spark.dsnSecretName" . }}
+                  key: {{ .Values.postgres.dsnSecret.key }}
+            - name: BOOTH_IFRAME_IDENTITY_ISSUER_URL
+              value: {{ required "identity.issuerUrl is required: the module's UI is authenticated by booth-core's X-Booth-Identity assertion (ADR 0069)" .Values.identity.issuerUrl | quote }}
+            - name: BOOTH_OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: BOOTH_SUBMIT_MIN_ROLE
+              value: {{ .Values.submit.minRole | quote }}
+            {{- with .Values.oidc.issuerUrl }}
+            - name: BOOTH_OIDC_ISSUER_URL
+              value: {{ . | quote }}
+            - name: BOOTH_OIDC_CLIENT_ID
+              value: {{ $.Values.oidc.clientId | quote }}
+            - name: BOOTH_OIDC_REQUIRE_AUDIENCE
+              value: {{ $.Values.oidc.requireAudience | quote }}
+            {{- end }}
+            {{- with .Values.oidc.jwksUrl }}
+            # ADR 0108 key-fetch override. Rendered even without issuerUrl, so that mistake fails at
+            # startup with a clear message instead of being silently ignored.
+            - name: BOOTH_OIDC_JWKS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.oidc.workloadIssuerUrl }}
+            # ADR 0056/0059: booth-core's workload tokens on /v1. Also rendered without issuerUrl, so
+            # that mistake fails at startup.
+            - name: BOOTH_WORKLOAD_ISSUER_URL
+              value: {{ . | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
