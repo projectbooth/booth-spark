@@ -1,0 +1,108 @@
+# Default values for booth-spark.
+#
+# The chart runs the module backend, the one always-on piece (docs/design-v0.md item 1). In later
+# steps the backend creates one namespace per Spark application or session, holding its driver and
+# executors; this first step deploys the backend alone.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/projectbooth/booth-spark
+  tag: "" # defaults to Chart.appVersion; CI overrides it with the image it just built
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+# The published /v1 API (docs/design-v0.md items 2 and 6) verifies each caller's bearer token
+# itself (ADR 0041), against the same OIDC provider and client booth-core uses. Left empty, /v1
+# answers 503; the module's UI (iframe routes, `identity` below) works regardless.
+oidc:
+  issuerUrl: ""
+  # Required when issuerUrl is set.
+  clientId: ""
+  requireAudience: true
+  # The claim carrying workspace memberships (ADR 0025). Must match booth-core's
+  # BOOTH_OIDC_GROUPS_CLAIM. Also used for the iframe assertion's groups.
+  groupsClaim: groups
+  # ADR 0108: fetch signing keys from this URL instead of the issuer's discovery document; `iss` is
+  # still checked exactly against issuerUrl. The bundled install points it at Keycloak's in-cluster
+  # Service over plain http (booth-core's operations doc gives the shared value). Empty (default):
+  # discovery. Requires issuerUrl.
+  jwksUrl: ""
+  # booth-core's workload-token issuer (ADR 0056/0059), so unattended runs (a pipeline task) can call
+  # /v1 too. Its in-cluster Service URL, the same value as booth-core's workloadIdentity issuer,
+  # e.g. http://booth-core.booth-system.svc:8080. A run submitted with a workload token gets no data
+  # access in v0 (ADR 0110 ruling 5). Empty: people only. Requires issuerUrl.
+  workloadIssuerUrl: ""
+
+identity:
+  # booth-core's iframe-identity issuer (ADR 0069). Every request through the shell's iframe carries
+  # core's signed X-Booth-Identity assertion, verified against this issuer's keys. It must equal
+  # core's BOOTH_IFRAME_IDENTITY_ISSUER_URL EXACTLY: it is compared character for character with the
+  # assertion's `iss`, and core's chart spells its default host "...svc.cluster.local:8080", not the
+  # shorter "...svc:8080" other booth URLs use. The default matches core installed as release
+  # "booth-core" in namespace "booth-system" (booth-streamlit, booth-logging and booth-notebooks use
+  # the same).
+  issuerUrl: "http://booth-core.booth-system.svc.cluster.local:8080/iframe-identity"
+
+submit:
+  # The lowest workspace role that may submit an application or start a session (ADR 0110):
+  # "editor" (default) or "owner". Viewers never submit. Submitted code runs on the cluster with the
+  # submitter's data access, capped at editor, so "owner" is the setting for an install where
+  # editors are not trusted.
+  minRole: editor
+
+# Run records live in this module's own database on the shared PostgreSQL cluster (ADR 0014).
+#
+# By default booth-core provisions it (ADR 0053/0054): the BoothModule declares
+# `database: {enabled: true}`, and core creates a database and unprivileged role and delivers them
+# as the Secret `booth-database-credentials` (key `dsn`) in this release's namespace. The pod sits
+# in CreateContainerConfigError for a moment after install until core has written it.
+#
+# To use your own database instead, set provisionedByCore to false and name a Secret holding the
+# connection string in dsnSecret. This chart never creates the database, role or Secret itself.
+postgres:
+  provisionedByCore: true
+  dsnSecret:
+    # Empty means "booth-database-credentials" when provisionedByCore is true; required (no default)
+    # when it is false.
+    name: ""
+    key: dsn
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The backend is small: a Go process holding run metadata and proxying traffic. Sized for a
+# homelab (docs/design-v0.md item 7); drivers and executors get their own limits in later steps.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Placement of the backend (the controller), with plain Kubernetes names as booth-database and
+# booth-logging use (docs/design-v0.md item 8; allowed for Spark alone, ADR 0110). Drivers and
+# executors get their own `runs.driver.*` / `runs.executor.*` blocks when runs exist (step 3).
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  create: true
+  name: ""
+
+nameOverride: ""
+fullnameOverride: ""

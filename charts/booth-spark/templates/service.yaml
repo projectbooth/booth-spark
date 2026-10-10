@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "booth-spark.fullname" . }}
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "booth-spark.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

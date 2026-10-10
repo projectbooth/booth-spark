@@ -1,0 +1,13 @@
+apiVersion: v2
+name: booth-spark
+description: >
+  Project Booth's Spark compute module: Spark applications and sessions on Kubernetes, one
+  namespace per run, managed by the module backend (no Spark Operator; ADR 0110), reached through
+  the shell via iframe-proxy and through a versioned /v1 job-submission API.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# ADR 0110 ruling 2: the per-run admission policies need ValidatingAdmissionPolicy (GA in 1.30).
+# templates/_checks.tpl also fails when the API itself is not served.
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/projectbooth/booth-spark
