@@ -162,18 +162,21 @@ func TestBuild_DriverPod(t *testing.T) {
 	}
 }
 
-// Driver only: Spark refuses dynamic allocation with maxExecutors=0, so it is turned off.
+// Driver only: Spark on Kubernetes refuses zero executors, so a run with none is local mode in
+// its driver pod.
 func TestDriverArgs_NoExecutors(t *testing.T) {
 	r := testRun(t)
 	r.Spec.MinExecutors, r.Spec.MaxExecutors = 0, 0
 	args := strings.Join(DriverArgs(r, testCluster(), APIEndpoint{IP: "1.2.3.4", Port: 6443}), " ")
-	for _, want := range []string{"spark.dynamicAllocation.enabled=false", "spark.executor.instances=0"} {
+	for _, want := range []string{"--master local[1]", "spark.dynamicAllocation.enabled=false"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args lack %s", want)
 		}
 	}
-	if strings.Contains(args, "maxExecutors=0") {
-		t.Error("maxExecutors=0 is passed to Spark, which refuses it")
+	for _, bad := range []string{"maxExecutors=0", "executor.instances=0", "k8s://"} {
+		if strings.Contains(args, bad) {
+			t.Errorf("args contain %s, which Spark refuses for zero executors", bad)
+		}
 	}
 	r.Spec.MaxExecutors = 2
 	if args := strings.Join(DriverArgs(r, testCluster(), APIEndpoint{IP: "1.2.3.4", Port: 6443}), " "); !strings.Contains(args, "spark.dynamicAllocation.enabled=true") {

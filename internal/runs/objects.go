@@ -3,6 +3,7 @@ package runs
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/projectbooth/booth-spark/internal/sparkconf"
 	corev1 "k8s.io/api/core/v1"
@@ -321,15 +322,19 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		"spark.local.dir": localDir,
 		"spark.jars.ivy":  "/tmp/.ivy2",
 	}
+	master := fmt.Sprintf("k8s://https://%s:%d", api.IP, api.Port)
 	if v.MaxExecutors == 0 {
-		// Driver only. Spark refuses dynamic allocation with maxExecutors=0 ("cannot be 0!",
-		// found by Integration on a session), so it is off and no executor is ever requested.
-		for _, k := range []string{"spark.dynamicAllocation.minExecutors", "spark.dynamicAllocation.initialExecutors",
-			"spark.dynamicAllocation.maxExecutors", "spark.dynamicAllocation.shuffleTracking.enabled", "spark.dynamicAllocation.executorIdleTimeout"} {
-			delete(conf, k)
+		// Driver only. On Kubernetes Spark has no zero-executor mode: it refuses
+		// dynamicAllocation.maxExecutors=0 ("cannot be 0!") and executor.instances=0 ("must be a
+		// positive number"), both found by Integration. So a run with no executors runs Spark in
+		// local mode inside its driver pod: same pod, same limits, no executor ever requested.
+		master = "local[1]"
+		for k := range conf {
+			if strings.HasPrefix(k, "spark.dynamicAllocation.") {
+				delete(conf, k)
+			}
 		}
 		conf["spark.dynamicAllocation.enabled"] = "false"
-		conf["spark.executor.instances"] = "0"
 	}
 	for k, val := range sparkconf.UIConf() {
 		conf[k] = val
@@ -340,7 +345,7 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		}
 	}
 	args := []string{"/opt/spark/bin/spark-submit",
-		"--master", fmt.Sprintf("k8s://https://%s:%d", api.IP, api.Port),
+		"--master", master,
 		"--deploy-mode", "client",
 		"--name", r.ID,
 	}
