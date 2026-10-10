@@ -118,7 +118,7 @@ func TestChart_RBACIsExactlyTheDesign(t *testing.T) {
 		"Role/booth-spark-api-endpoints": expand("discovery.k8s.io/endpointslices[kubernetes]:get"),
 		// Bound by the backend inside each run namespace, only there.
 		"ClusterRole/booth-spark-run-controller": expand(
-			"/serviceaccounts,configmaps,services,resourcequotas,limitranges:create",
+			"/serviceaccounts,configmaps,services,resourcequotas,limitranges,secrets:create",
 			"/pods:create,get",
 			"/pods/log:get",
 			"networking.k8s.io/networkpolicies:create",
@@ -156,10 +156,11 @@ func TestChart_RBACIsExactlyTheDesign(t *testing.T) {
 			}
 		}
 	}
-	// No rule anywhere touches Secrets, exec, attach, port-forward, or uses a wildcard.
+	// No rule anywhere reads Secrets (the run controller may only create a session's bearer, step 4),
+	// or touches exec, attach, port-forward, or uses a wildcard.
 	for name, o := range objs {
 		for _, l := range flatten(o.Rules) {
-			if strings.Contains(l, "secrets") || strings.Contains(l, "pods/exec") || strings.Contains(l, "pods/attach") ||
+			if (strings.Contains(l, "secrets") && l != "/secrets:create") || strings.Contains(l, "pods/exec") || strings.Contains(l, "pods/attach") ||
 				strings.Contains(l, "pods/portforward") || strings.Contains(l, "*") {
 				t.Errorf("%s grants %s", name, l)
 			}

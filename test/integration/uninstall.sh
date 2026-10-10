@@ -3,9 +3,9 @@
 # by the chart's driver ClusterRole, so removing the chart, by any route, deletes them through
 # Kubernetes' garbage collector, and Helm removes the policies, their bindings and the ClusterRoles.
 #   1. `helm uninstall` of the running install, with a live run: nothing of it is left.
-#   2. Reinstalled as release "spark" (the name booth-core's module lifecycle uses), with a live run,
-#      then uninstalled through booth-core's module uninstall API (DELETE /api/modules/spark, as a
-#      workspace owner): nothing of it is left.
+#   2. Reinstalled as release "spark" (the name booth-core's module lifecycle uses), with a live run
+#      and a live session (step 4), then uninstalled through booth-core's module uninstall API
+#      (DELETE /api/modules/spark, as a workspace owner): nothing of it is left.
 # Run last: it removes booth-spark.
 #
 #   test/integration/uninstall.sh <booth-spark image> <Spark image>
@@ -59,6 +59,14 @@ for _ in $(seq 1 60); do
 done
 ns2=$(live_run)
 echo "live run namespace $ns2"
+T_editor=$(tok editor-user)
+sess=$(start_session "$T_editor" left-open '{"resources":{"executors":{"max":0}}}')
+WAIT=300 wait_session "$T_editor" "$sess" running >/dev/null
+stmt "$T_editor" "$sess" python "import time
+time.sleep(1200)" >/dev/null # busy: it can't idle out before the uninstall
+ns3=bspark-$sess
+kubectl get namespace "$ns3" >/dev/null || fail "no namespace for live session $sess"
+echo "live session namespace $ns3"
 [ -n "$(leftovers spark-booth-spark booth-spark.spark-booth-spark)" ] || fail "control: the reinstall's objects aren't visible"
 T_owner=$(tok owner-user)
 code=$(curl -s -o /tmp/uninstall-body -w '%{http_code}' -X DELETE -H "Authorization: Bearer $T_owner" -H "X-Workspace: $WS" \
@@ -67,6 +75,7 @@ case "$code" in 200|202|204) ;; *) fail "core's uninstall API answered $code: $(
 echo "core's uninstall API: $code"
 clean spark-booth-spark booth-spark.spark-booth-spark
 ns_gone "$ns2"
+ns_gone "$ns3"
 helm status spark -n booth-spark >/dev/null 2>&1 && fail "the release still exists after core's uninstall"
 echo "ok: no release, run namespace, policy, binding or ClusterRole left"
 echo "all uninstall checks passed"

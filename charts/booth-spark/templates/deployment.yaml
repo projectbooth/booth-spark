@@ -78,6 +78,10 @@ spec:
             # The run controller (values.yaml runs; docs/design-v0.md item 3).
             - name: BOOTH_RUNS
               value: {{ toJson .Values.runs | quote }}
+            - name: BOOTH_SESSION_IDLE_TIMEOUT
+              value: {{ .Values.sessions.idleTimeout | quote }}
+            - name: BOOTH_SESSION_MAX_LIFETIME
+              value: {{ .Values.sessions.maxLifetime | quote }}
             - name: BOOTH_INSTANCE
               value: {{ include "booth-spark.instance" . | quote }}
             - name: BOOTH_NAMESPACE

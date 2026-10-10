@@ -3,6 +3,7 @@ package runs
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/projectbooth/booth-spark/internal/sparkconf"
 	corev1 "k8s.io/api/core/v1"
@@ -28,16 +29,20 @@ const (
 	NamespacePrefix = "bspark-"
 
 	// Names inside a run's namespace.
-	DriverAccount       = "driver"
-	ExecutorAccount     = "executor"
-	DriverPod           = "driver"
-	DriverService       = "driver"
-	AppConfigMap        = "app"
-	ControllerBinding   = "booth-spark-controller"
-	DriverBinding       = "driver"
-	DriverRPCPort       = 7078
-	BlockManagerPort    = 7079
-	UIPort              = 4040
+	DriverAccount     = "driver"
+	ExecutorAccount   = "executor"
+	DriverPod         = "driver"
+	DriverService     = "driver"
+	AppConfigMap      = "app"
+	ControllerBinding = "booth-spark-controller"
+	DriverBinding     = "driver"
+	DriverRPCPort     = 7078
+	BlockManagerPort  = 7079
+	UIPort            = 4040
+	// SessionPort is a session's runner (runner/session_runner.py), reached by the backend only.
+	SessionPort         = 8998
+	SessionSecret       = "session"
+	sessionMountPath    = "/opt/booth/session"
 	runMountPath        = "/opt/booth/run"
 	localDir            = "/var/data/spark-local"
 	executorTemplateKey = "executor-template.yaml"
@@ -106,8 +111,10 @@ type Objects struct {
 	LimitRange        *corev1.LimitRange
 	NetworkPolicies   []*networkingv1.NetworkPolicy
 	AppConfigMap      *corev1.ConfigMap
-	DriverService     *corev1.Service
-	DriverPod         *corev1.Pod
+	// SessionSecret holds a session's runner bearer (nil for an application).
+	SessionSecret *corev1.Secret
+	DriverService *corev1.Service
+	DriverPod     *corev1.Pod
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -195,8 +202,18 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 	if err != nil {
 		return Objects{}, err
 	}
+	main := v.Main.InlinePython
+	if r.Kind == "session" {
+		if r.SessionToken == "" {
+			return Objects{}, fmt.Errorf("session %s has no runner token", r.ID)
+		}
+		// A session's driver runs the module's own session runner; statements arrive later.
+		main = SessionRunner
+		o.SessionSecret = &corev1.Secret{ObjectMeta: meta(SessionSecret), Type: corev1.SecretTypeOpaque,
+			StringData: map[string]string{"token": r.SessionToken}}
+	}
 	o.AppConfigMap = &corev1.ConfigMap{ObjectMeta: meta(AppConfigMap), Data: map[string]string{
-		mainKey:             v.Main.InlinePython,
+		mainKey:             main,
 		executorTemplateKey: tmpl,
 	}}
 	o.DriverService = &corev1.Service{ObjectMeta: meta(DriverService), Spec: corev1.ServiceSpec{
@@ -208,6 +225,10 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 			{Name: "ui", Port: UIPort, TargetPort: intstr.FromInt32(UIPort)},
 		},
 	}}
+	if r.Kind == "session" {
+		o.DriverService.Spec.Ports = append(o.DriverService.Spec.Ports,
+			corev1.ServicePort{Name: "session", Port: SessionPort, TargetPort: intstr.FromInt32(SessionPort)})
+	}
 	o.DriverPod = driverPod(r, c, api[0], driverLabels, driverMi)
 	return o, nil
 }
@@ -301,6 +322,20 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		"spark.local.dir": localDir,
 		"spark.jars.ivy":  "/tmp/.ivy2",
 	}
+	master := fmt.Sprintf("k8s://https://%s:%d", api.IP, api.Port)
+	if v.MaxExecutors == 0 {
+		// Driver only. On Kubernetes Spark has no zero-executor mode: it refuses
+		// dynamicAllocation.maxExecutors=0 ("cannot be 0!") and executor.instances=0 ("must be a
+		// positive number"), both found by Integration. So a run with no executors runs Spark in
+		// local mode inside its driver pod: same pod, same limits, no executor ever requested.
+		master = "local[1]"
+		for k := range conf {
+			if strings.HasPrefix(k, "spark.dynamicAllocation.") {
+				delete(conf, k)
+			}
+		}
+		conf["spark.dynamicAllocation.enabled"] = "false"
+	}
 	for k, val := range sparkconf.UIConf() {
 		conf[k] = val
 	}
@@ -310,12 +345,15 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		}
 	}
 	args := []string{"/opt/spark/bin/spark-submit",
-		"--master", fmt.Sprintf("k8s://https://%s:%d", api.IP, api.Port),
+		"--master", master,
 		"--deploy-mode", "client",
 		"--name", r.ID,
 	}
 	args = append(args, sparkconf.Args(conf)...)
 	args = append(args, runMountPath+"/"+mainKey)
+	if r.Kind == "session" {
+		return args
+	}
 	return append(args, v.Args...)
 }
 
@@ -328,6 +366,19 @@ func driverPod(r Run, c Cluster, api APIEndpoint, labels map[string]string, memM
 	mounts = append(mounts, corev1.VolumeMount{Name: "run", MountPath: runMountPath, ReadOnly: true},
 		corev1.VolumeMount{Name: "spark-local", MountPath: localDir})
 	env := []corev1.EnvVar{{Name: "HOME", Value: "/tmp"}}
+	ports := []corev1.ContainerPort{
+		{Name: "rpc", ContainerPort: DriverRPCPort}, {Name: "blockmanager", ContainerPort: BlockManagerPort},
+		{Name: "ui", ContainerPort: UIPort},
+	}
+	if r.Kind == "session" {
+		// The runner's bearer, readable by the driver's own uid only (group 185, 0440).
+		vols = append(vols, corev1.Volume{Name: "session", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: SessionSecret, DefaultMode: ptr(int32(0o440)),
+		}}})
+		mounts = append(mounts, corev1.VolumeMount{Name: "session", MountPath: sessionMountPath, ReadOnly: true})
+		env = append(env, corev1.EnvVar{Name: "BOOTH_SESSION_TOKEN_FILE", Value: sessionMountPath + "/token"})
+		ports = append(ports, corev1.ContainerPort{Name: "session", ContainerPort: SessionPort})
+	}
 	for k, val := range sparkconf.UIEnv(r.ID) {
 		env = append(env, corev1.EnvVar{Name: k, Value: val})
 	}
@@ -352,10 +403,7 @@ func driverPod(r Run, c Cluster, api APIEndpoint, labels map[string]string, memM
 				ImagePullPolicy: c.ImagePullPolicy,
 				Args:            DriverArgs(r, c, api),
 				Env:             env,
-				Ports: []corev1.ContainerPort{
-					{Name: "rpc", ContainerPort: DriverRPCPort}, {Name: "blockmanager", ContainerPort: BlockManagerPort},
-					{Name: "ui", ContainerPort: UIPort},
-				},
+				Ports:           ports,
 				Resources: corev1.ResourceRequirements{
 					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(c.DriverCPU.Request), corev1.ResourceMemory: mem},
 					Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(c.DriverCPU.Limit), corev1.ResourceMemory: mem},
@@ -412,13 +460,14 @@ func networkPolicies(ns string, c Cluster, api []APIEndpoint, labels map[string]
 		})
 	}
 
-	ui := np("backend-to-driver-ui", driver, in)
+	// The backend's pods, and only they, reach the driver's UI and (for a session) its runner.
+	ui := np("backend-to-driver", driver, in)
 	ui.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{
 		From: []networkingv1.NetworkPolicyPeer{{
 			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": c.ReleaseNamespace}},
 			PodSelector:       &metav1.LabelSelector{MatchLabels: c.BackendPodLabels},
 		}},
-		Ports: []networkingv1.NetworkPolicyPort{port(UIPort, tcp)},
+		Ports: []networkingv1.NetworkPolicyPort{port(UIPort, tcp), port(SessionPort, tcp)},
 	}}
 
 	pols := []*networkingv1.NetworkPolicy{deny, same, dns, apiNP, ui}

@@ -127,6 +127,16 @@ runs:
       namespaceSelector: {kubernetes.io/metadata.name: kube-system}
       podSelector: {k8s-app: kube-dns}
 
+# Sessions (build step 4; docs/design-v0.md items 6 and 7): a long-lived driver, in its own
+# namespace like a run, that takes statements (SQL or Python) through /v1 only. Spark Connect is not
+# enabled (ADR 0110 ruling 7). A session with no statement waiting or running and no new one for
+# idleTimeout is stopped and its namespace deleted (a statement still running counts as activity);
+# every session is stopped after maxLifetime. A caller may ask for less of either, never more.
+# Sessions count against runs.maxRunning and runs.memoryBudget like any run.
+sessions:
+  idleTimeout: 20m
+  maxLifetime: 12h
+
 # Run records live in this module's own database on the shared PostgreSQL cluster (ADR 0014).
 #
 # By default booth-core provisions it (ADR 0053/0054): the BoothModule declares

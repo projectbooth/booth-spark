@@ -162,6 +162,28 @@ func TestBuild_DriverPod(t *testing.T) {
 	}
 }
 
+// Driver only: Spark on Kubernetes refuses zero executors, so a run with none is local mode in
+// its driver pod.
+func TestDriverArgs_NoExecutors(t *testing.T) {
+	r := testRun(t)
+	r.Spec.MinExecutors, r.Spec.MaxExecutors = 0, 0
+	args := strings.Join(DriverArgs(r, testCluster(), APIEndpoint{IP: "1.2.3.4", Port: 6443}), " ")
+	for _, want := range []string{"--master local[1]", "spark.dynamicAllocation.enabled=false"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args lack %s", want)
+		}
+	}
+	for _, bad := range []string{"maxExecutors=0", "executor.instances=0", "k8s://"} {
+		if strings.Contains(args, bad) {
+			t.Errorf("args contain %s, which Spark refuses for zero executors", bad)
+		}
+	}
+	r.Spec.MaxExecutors = 2
+	if args := strings.Join(DriverArgs(r, testCluster(), APIEndpoint{IP: "1.2.3.4", Port: 6443}), " "); !strings.Contains(args, "spark.dynamicAllocation.enabled=true") {
+		t.Error("dynamic allocation is off with executors allowed")
+	}
+}
+
 // A caller's conf can never override what makes the run isolated.
 func TestDriverArgs_CallerConfCannotOverride(t *testing.T) {
 	r := testRun(t)
@@ -183,7 +205,7 @@ func TestBuild_NetworkPolicies(t *testing.T) {
 		return out
 	}
 	c := testCluster()
-	if got := names(c); !reflect.DeepEqual(got, map[string]bool{"default-deny": true, "same-run": true, "dns": true, "driver-to-api": true, "backend-to-driver-ui": true, "internet": true}) {
+	if got := names(c); !reflect.DeepEqual(got, map[string]bool{"default-deny": true, "same-run": true, "dns": true, "driver-to-api": true, "backend-to-driver": true, "internet": true}) {
 		t.Errorf("open: %v", got)
 	}
 	c.Egress.Mode = "closed"
@@ -204,10 +226,11 @@ func TestBuild_NetworkPolicies(t *testing.T) {
 		api.Spec.Egress[0].Ports[0].Port.IntVal != 6443 {
 		t.Errorf("api rule = %+v", api.Spec)
 	}
-	ui := o.NetworkPolicies[pols["backend-to-driver-ui"]]
+	ui := o.NetworkPolicies[pols["backend-to-driver"]]
 	from := ui.Spec.Ingress[0].From[0]
 	if from.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "booth-spark" ||
-		!reflect.DeepEqual(from.PodSelector.MatchLabels, testCluster().BackendPodLabels) || ui.Spec.Ingress[0].Ports[0].Port.IntVal != UIPort {
+		!reflect.DeepEqual(from.PodSelector.MatchLabels, testCluster().BackendPodLabels) || ui.Spec.Ingress[0].Ports[0].Port.IntVal != UIPort ||
+		len(ui.Spec.Ingress[0].Ports) != 2 || ui.Spec.Ingress[0].Ports[1].Port.IntVal != SessionPort {
 		t.Errorf("ui rule = %+v", ui.Spec)
 	}
 }

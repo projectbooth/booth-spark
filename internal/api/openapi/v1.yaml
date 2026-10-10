@@ -17,7 +17,11 @@ info:
     reading its logs needs its submitter, a workspace owner or a platform operator. A run's Spark UI
     opens in the shell for its submitter only (`uiPath`).
 
-    Not in this version: sessions and statements (a later release), data access (`dataAccess`,
+    Sessions are their submitter's and their workspace owners': nobody else sees them, and only the
+    submitter runs statements in one. A session with nothing waiting or running and no new
+    statement for its idle timeout is stopped, as is every session after its maximum lifetime.
+
+    Not in this version: data access (`dataAccess`,
     `main.python`, `main.jar` are refused with 422), and any data access for runs submitted with a
     workload token (ADR 0110 ruling 5).
   license:
@@ -33,6 +37,8 @@ tags:
     description: Who the caller is, as this module derives it
   - name: applications
     description: Batch Spark applications, one namespace per run
+  - name: sessions
+    description: Long-lived Spark sessions that take statements, one namespace each; stopped when idle
 paths:
   /me:
     get:
@@ -184,6 +190,191 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
+  /sessions:
+    get:
+      tags: [sessions]
+      operationId: listSessions
+      summary: The caller's sessions (all of the workspace's, for a workspace owner), newest first
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+      responses:
+        "200":
+          description: The sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: {$ref: "#/components/schemas/Session"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+    post:
+      tags: [sessions]
+      operationId: startSession
+      summary: Start a session
+      description: |
+        Admitted like an application (runs.maxRunning, runs.memoryBudget; otherwise 429). The session
+        becomes `running` once its SparkSession is ready; statements sent before then wait.
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: As for applications
+          schema: {type: string, maxLength: 200}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SessionSpec"}
+      responses:
+        "201":
+          description: Started
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+        "200":
+          description: Already started with this Idempotency-Key
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+  /sessions/{id}:
+    get:
+      tags: [sessions]
+      operationId: getSession
+      summary: One session (its submitter or a workspace owner)
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The session
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [sessions]
+      operationId: deleteSession
+      summary: Stop a session and delete its namespace (its submitter or a workspace owner)
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "202":
+          description: Stop requested; the session becomes `stopped` and its namespace is deleted
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+        "200":
+          description: The session had already ended
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Session"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /sessions/{id}/logs:
+    get:
+      tags: [sessions]
+      operationId: getSessionLogs
+      summary: The session driver's log (its submitter or a workspace owner)
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The log
+          content:
+            text/plain:
+              schema: {type: string}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+  /sessions/{id}/statements:
+    get:
+      tags: [sessions]
+      operationId: listStatements
+      summary: The session's statements, in order (its submitter or a workspace owner)
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The statements
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [statements]
+                properties:
+                  statements:
+                    type: array
+                    items: {$ref: "#/components/schemas/Statement"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    post:
+      tags: [sessions]
+      operationId: runStatement
+      summary: Run a statement in the session (its submitter only)
+      description: |
+        Statements run one at a time, in order, in the session's one SparkSession (`spark`, `sc`).
+        A statement that fails ends as `error` with its traceback; the session goes on. At most 20
+        statements may be waiting or running at once (429). A statement waiting or running keeps
+        the session from going idle.
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/StatementRequest"}
+      responses:
+        "201":
+          description: Queued
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Statement"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+  /sessions/{id}/statements/{sid}:
+    get:
+      tags: [sessions]
+      operationId: getStatement
+      summary: One statement, with its output once it has ended
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+        - name: sid
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The statement
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Statement"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     bearer:
@@ -217,7 +408,7 @@ components:
         code:
           type: string
           description: A stable machine-readable code
-          enum: [invalid, forbidden, not_found, unavailable, at_capacity, internal]
+          enum: [invalid, forbidden, not_found, unavailable, at_capacity, session_over, internal]
     Me:
       type: object
       required: [subject, workspace, role, operator, workload, canSubmit, submitMinRole]
@@ -319,3 +510,96 @@ components:
         uiPath:
           type: string
           description: While running, where the run's Spark UI opens in the shell (its submitter only)
+    SessionSpec:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$"
+        resources:
+          type: object
+          additionalProperties: false
+          properties:
+            driver:
+              type: object
+              additionalProperties: false
+              properties:
+                memory: {$ref: "#/components/schemas/Memory"}
+            executors:
+              type: object
+              additionalProperties: false
+              properties:
+                min: {type: integer, minimum: 0}
+                max: {type: integer, minimum: 0}
+                memory: {$ref: "#/components/schemas/Memory"}
+        conf:
+          type: object
+          description: The same allowlist as an application's conf
+          additionalProperties: {type: string, maxLength: 256}
+        dataAccess:
+          description: Not in this version; any non-empty value is refused with 422
+        idleTimeout:
+          type: string
+          description: "A Go duration, at most sessions.idleTimeout (the default)"
+        maxLifetime:
+          type: string
+          description: "A Go duration, at most sessions.maxLifetime (the default)"
+    Session:
+      type: object
+      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources, idleTimeout, maxLifetime]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [session]}
+        workspace: {type: string}
+        submitter: {type: string}
+        submitterName: {type: string}
+        workload: {type: boolean}
+        name: {type: string}
+        state: {$ref: "#/components/schemas/State"}
+        reason: {type: string, description: "Why the session ended: deleted on request, idle, its maximum lifetime, or a failure"}
+        stopRequested: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+        lastActivityAt: {type: string, format: date-time}
+        footprintMi: {type: integer}
+        idleTimeout: {type: string}
+        maxLifetime: {type: string}
+        resources:
+          type: object
+          required: [driverMemory, executorMemory, minExecutors, maxExecutors]
+          properties:
+            driverMemory: {type: string}
+            executorMemory: {type: string}
+            minExecutors: {type: integer}
+            maxExecutors: {type: integer}
+        uiPath: {type: string, description: "While running, where the session's Spark UI opens in the shell (its submitter only)"}
+    StatementRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, code]
+      properties:
+        kind: {type: string, enum: [sql, python]}
+        code: {type: string, minLength: 1, maxLength: 262144}
+    Statement:
+      type: object
+      required: [id, sessionId, seq, kind, code, state, createdAt]
+      properties:
+        id: {type: string}
+        sessionId: {type: string}
+        seq: {type: integer}
+        kind: {type: string, enum: [sql, python]}
+        code: {type: string}
+        state: {type: string, enum: [waiting, running, available, error, cancelled]}
+        output:
+          description: |
+            Once available: for sql, {"type": "table", "columns": [{name, type}], "rows": [[...]],
+            "truncated"} (at most 1000 rows and 1 MiB); for python, {"type": "text", "stdout",
+            "stderr", "truncated"} (at most 1 MiB each).
+          type: object
+        error: {type: string, description: "The traceback of a statement that ended as error, or why it was cancelled"}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}

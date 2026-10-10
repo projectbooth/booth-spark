@@ -27,7 +27,18 @@ egress, and the run namespaces' egress rules are a boundary (ADR 0110). Then, in
   goes. A viewer, and an operator who is a viewer, can't submit. Logs are for the submitter, owners
   and operators only. A failing application is `failed` with the driver's exit. An owner stops an
   editor's run. Admission refuses what doesn't fit the memory budget (429).
-- `isolation.sh`: run A (editor) probes run B (owner) as its own user code (`fixtures/probe.py`):
+- `sessions.sh` (step 4): an editor's session, in its own namespace, runs SQL and Python statements
+  in order in one SparkSession. State is kept from statement to statement, and a failing statement
+  is `error` with its traceback while the session goes on. Only its submitter and workspace owners
+  see it (another editor, a viewer and an operator get 404), and only its submitter runs
+  statements. Idle shutdown: a statement running longer than the 60s test timeout keeps the session
+  alive, and once nothing runs it stops on its own and its namespace goes. Its maximum lifetime
+  stops it while busy and cancels the running statement. An owner deletes it. A backend restart
+  mid-statement re-adopts it: the result arrives and the next statement runs. An orphaned run
+  namespace is reaped.
+- `isolation.sh`: run A (an editor's application), then session E (an editor's, as a statement),
+  probe session B (owner), whose driver really listens on its RPC, UI and runner ports, as their own
+  user code (`fixtures/probe.py`):
   B's pods, Secrets, namespace and driver ports are refused. In its own namespace the run-pods policy
   refuses a non-allowlisted image, a missing nodeSelector, any account but `executor`, a mounted
   token, and another workspace's label. A pod outside every run can't reach a driver's UI port.
@@ -40,7 +51,7 @@ egress, and the run namespaces' egress rules are a boundary (ADR 0110). Then, in
   heap-histogram pages and the REST threads endpoint. A token-named conf is redacted, the driver
   sets no cookie, every request stays under the prefix, and the driver's UI port is closed to
   anything but the backend's pods.
-- `egress.sh`: from inside a run, with mode `open`, the internet is reachable while another
+- `egress.sh`: from inside a run, and from a session's statement, with mode `open`, the internet is reachable while another
   namespace's pod, a Service ClusterIP, booth-core's pod and the node's kubelet are not. With mode
   `closed`, the internet is not reachable either. DNS, the API and the run's own port stay reachable
   as controls.
@@ -50,7 +61,7 @@ egress, and the run namespaces' egress rules are a boundary (ADR 0110). Then, in
 
 ## Not covered yet (later build steps)
 
-- Sessions and idle shutdown (step 4), data access (step 5).
+- Data access (step 5).
 
 ## Running locally
 

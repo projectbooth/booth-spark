@@ -52,7 +52,10 @@ def listen(port):
     """Accept and drop connections on port, in the background: the target of the driver-port checks."""
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", port))
+    try:
+        srv.bind(("0.0.0.0", port))
+    except OSError:
+        return  # already listening: in a session, Spark's own driver holds its RPC port
     srv.listen(16)
 
     def loop():
@@ -106,6 +109,7 @@ if mode == "isolation":
     results["control: its own driver port through its Service"] = tcp("driver.%s.svc" % own, 7078)
     results["run B's driver RPC port"] = tcp("driver.%s.svc" % other, 7078)
     results["run B's driver UI port"] = tcp("driver.%s.svc" % other, 4040)
+    results["run B's session runner port"] = tcp("driver.%s.svc" % other, 8998)
     results["control: a compliant executor-like pod"] = pod("probe-ok", args["image"])[0]
     for name, kw in {
         "a pod with a non-allowlisted image": dict(image=args["otherImage"]),

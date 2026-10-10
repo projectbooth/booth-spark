@@ -46,6 +46,12 @@ type Config struct {
 	// BOOTH_INSTANCE etc. variables the chart sets). Nil when BOOTH_RUNS is unset: the module then
 	// serves identity and health but no runs (the Go tests' configuration, never a chart install).
 	Runs *Runs
+
+	// SessionIdleTimeout stops a session after this long with nothing waiting or running and no
+	// new statement (sessions.idleTimeout); a caller may ask for less, never more.
+	SessionIdleTimeout time.Duration
+	// SessionMaxLifetime stops a session after this long regardless (sessions.maxLifetime).
+	SessionMaxLifetime time.Duration
 }
 
 // Runs configures the run controller (docs/design-v0.md items 3, 7 and 8).
@@ -125,6 +131,19 @@ func Load() (Config, error) {
 	}
 	if cfg.SubmitMinRole != auth.RoleEditor && cfg.SubmitMinRole != auth.RoleOwner {
 		return Config{}, fmt.Errorf("BOOTH_SUBMIT_MIN_ROLE must be editor or owner (viewers never submit, ADR 0110), not %q", cfg.SubmitMinRole)
+	}
+	for name, d := range map[string]*time.Duration{
+		"BOOTH_SESSION_IDLE_TIMEOUT": &cfg.SessionIdleTimeout, "BOOTH_SESSION_MAX_LIFETIME": &cfg.SessionMaxLifetime,
+	} {
+		def := map[string]string{"BOOTH_SESSION_IDLE_TIMEOUT": "20m", "BOOTH_SESSION_MAX_LIFETIME": "12h"}[name]
+		v, err := time.ParseDuration(getEnv(name, def))
+		if err != nil || v < time.Second {
+			return Config{}, fmt.Errorf("%s must be a duration of at least 1s", name)
+		}
+		*d = v
+	}
+	if cfg.SessionIdleTimeout > cfg.SessionMaxLifetime {
+		return Config{}, fmt.Errorf("BOOTH_SESSION_IDLE_TIMEOUT is longer than BOOTH_SESSION_MAX_LIFETIME")
 	}
 	if v := os.Getenv("BOOTH_RUNS"); v != "" {
 		r, err := loadRuns(v)
