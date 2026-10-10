@@ -77,7 +77,7 @@ backend_settled() {
 # wait_state TOKEN ID STATE... [timeout seconds via WAIT=]: waits until the run is in one of the
 # states; prints it. Fails on a terminal state not listed.
 wait_state() {
-  local t=$1 id=$2 st=""
+  local t=$1 id=$2 st="" want
   shift 2
   for _ in $(seq 1 "${WAIT:-180}"); do
     v1 "$t" GET "/applications/$id"
@@ -129,7 +129,7 @@ start_session() {
 
 # wait_session TOKEN ID STATE...: waits until the session is in one of the states; prints it.
 wait_session() {
-  local t=$1 id=$2 st=""
+  local t=$1 id=$2 st="" want
   shift 2
   for _ in $(seq 1 "${WAIT:-240}"); do
     v1 "$t" GET "/sessions/$id"

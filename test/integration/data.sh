@@ -145,13 +145,13 @@ step "3. refused at launch, each with its reason"
 fresh
 for c in 'nosuch|{"storage":[{"backendId":"nosuch","path":"x"}]}|could not start: .*credential broker refused read access to nosuch/x' \
          'twice|{"storage":[{"backendId":"lake","path":"acme-files/in"},{"backendId":"lake","path":"acme-files/out"}]}|could not start: .*same bucket \(lake\)'; do
-  name=${c%%|*}; rest=${c#*|}; da=${rest%%|*}; want=${rest#*|}
+  name=${c%%|*}; rest=${c#*|}; da=${rest%%|*}; why=${rest#*|}
   v1 "$T_editor" POST /applications "$(app_json "refused-$name" "print(1)" "{\"dataAccess\":$da,\"resources\":{\"executors\":{\"max\":0}}}")"
   [ "$code" = 201 ] || fail "submit $name: $code $body"
   id=$(echo "$body" | jq_ "d['id']")
   WAIT=120 wait_state "$T_editor" "$id" failed >/dev/null
   v1 "$T_editor" GET "/applications/$id"
-  grep -Eq "$want" <<<"$(echo "$body" | jq_ "d['reason']")" || fail "$name: not refused for its reason: $body"
+  grep -Eq "$why" <<<"$(echo "$body" | jq_ "d['reason']")" || fail "$name: not refused for its reason: $body"
   kubectl get namespace "bspark-$id" >/dev/null 2>&1 && fail "$name: a namespace was created for a refused run"
   ok "$name: $(echo "$body" | jq_ "d['reason']")"
 done
