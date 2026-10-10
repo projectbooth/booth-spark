@@ -456,6 +456,8 @@ components:
               type: string
               maxLength: 256
               description: The JAR's fully qualified main class (with main.jar only)
+            inlinePythonBytes: {type: integer, description: Set by the module; ignored on submission}
+            inlinePythonSha256: {type: string, description: Set by the module; ignored on submission}
           description: Exactly one of inlinePython, python or jar
         args:
           type: array
@@ -574,6 +576,15 @@ components:
           type: string
           description: While running, where the run's Spark UI opens in the shell (its submitter only)
         dataAccess: {$ref: "#/components/schemas/DataView"}
+        main:
+          type: object
+          description: The run's entry point without its code
+          properties:
+            inlinePythonBytes: {type: integer, description: "The inline Python's length; kept after sessions.resultRetention clears the code"}
+            inlinePythonSha256: {type: string, description: "The inline Python's SHA-256 (hex); kept after the code is cleared"}
+            python: {$ref: "#/components/schemas/FileRef"}
+            jar: {$ref: "#/components/schemas/FileRef"}
+            mainClass: {type: string}
     SessionSpec:
       type: object
       additionalProperties: false

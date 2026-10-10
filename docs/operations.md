@@ -30,6 +30,7 @@ then, this page holds the limits the coordinator ruled must be written down.
 `sessions.resultRetention` (default `168h`, 7 days) is how long an ended run's content is kept.
 After that, the controller clears:
 - a session's statement code, output and error;
+- an application's inline Python (its length and SHA-256 stay, and its view shows them);
 - the driver log tail kept when any run (session or application) ended.
 
 The run's state, reason and timestamps stay, and `contentClearedAt` records when it was cleared. A
@@ -45,8 +46,9 @@ Off by default (`dataAccess.enabled`). With it on, a run reads and writes data a
 capped at editor: the workspace's booth-database schema, its booth-lakehouse warehouse (the Iceberg
 catalog `lakehouse`), and up to 4 booth-storage locations it names. Turning it on needs:
 
-- `runs.image` set to booth-spark's runtime image (`images/spark-runtime`). The chart refuses plain
-  `apache/spark`, which has no JDBC driver, Iceberg or S3A;
+- `runs.image` to be booth-spark's runtime image (`images/spark-runtime`, published to GHCR for
+  linux/amd64 and linux/arm64), which is the default, pinned by digest. The chart refuses plain
+  `apache/spark` with data access on: it has no JDBC driver, Iceberg or S3A;
 - the data paths you have installed: `dataAccess.database.enabled`, `dataAccess.lakehouse.enabled`,
   `dataAccess.storage.enabled`. `dataAccess.database.egress` must match your booth-database
   install's namespace and Postgres labels; for an in-cluster object store (MinIO), set
@@ -63,8 +65,9 @@ Known limits, stated plainly:
   can read and, as an editor's run, write: the whole workspace schema and warehouse. With open
   egress it can also send that anywhere on the internet (ADR 0110, "Open egress"). Where editors
   aren't trusted, set `runs.egress.mode=closed` or `submit.minRole=owner`.
-- **One storage location per bucket.** A run naming two locations in one bucket is refused at
-  launch; name their common parent instead. The warehouse and one storage location may share a
-  bucket.
+- **One storage location per bucket** (a v0 limit, accepted in ADR 0110's step 5 rulings). S3A
+  takes credentials per bucket, so a run naming two locations in one bucket is refused at launch,
+  with that reason; name their common parent instead. The warehouse (`s3://`) and one storage
+  location (`s3a://`) may share a bucket.
 - **Runs submitted with a workload token** (a pipeline task) get no data access in this version
   (ADR 0110 ruling 5).

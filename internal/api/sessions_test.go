@@ -205,6 +205,11 @@ func TestSessions_ContentCleared(t *testing.T) {
 			t.Errorf("%s/logs after clearing: %d %s", p, code, body)
 		}
 	}
+	// The application's code is never shown; after clearing, its length and SHA-256 still are.
+	if code, body := h("editor", "acme", "GET", "/v1/applications/"+app, ""); code != 200 || strings.Contains(body, "print(1)") ||
+		!strings.Contains(body, `"inlinePythonBytes":8`) || !strings.Contains(body, `"inlinePythonSha256":"`) {
+		t.Errorf("application main after clearing: %d %s", code, body)
+	}
 	code, body := h("editor", "acme", "GET", "/v1/sessions/"+id+"/statements/"+sid, "")
 	if code != 200 || strings.Contains(body, "select secret") || !strings.Contains(body, `"state":"cancelled"`) || !strings.Contains(body, `"code":""`) {
 		t.Errorf("statement after clearing: %d %s", code, body)

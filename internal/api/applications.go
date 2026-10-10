@@ -52,6 +52,18 @@ type runView struct {
 	UIPath string `json:"uiPath,omitempty"`
 	// DataAccess is what the run asked for and, once it launched, what it got.
 	DataAccess *dataView `json:"dataAccess,omitempty"`
+	// Main is the run's entry point without its code: the inline Python's length and SHA-256, or
+	// the file in booth-storage.
+	Main mainView `json:"main"`
+}
+
+// mainView is an entry point as /v1 shows it. The inline code itself is never shown.
+type mainView struct {
+	InlinePythonBytes  int           `json:"inlinePythonBytes,omitempty"`
+	InlinePythonSHA256 string        `json:"inlinePythonSha256,omitempty"`
+	Python             *runs.FileRef `json:"python,omitempty"`
+	Jar                *runs.FileRef `json:"jar,omitempty"`
+	MainClass          string        `json:"mainClass,omitempty"`
 }
 
 // dataView is a run's data access as /v1 shows it: no credential, no object-store address.
@@ -85,7 +97,9 @@ func dview(r runs.Run) *dataView {
 }
 
 func view(r runs.Run) runView {
-	v := runView{Run: r, DataAccess: dview(r)}
+	m := r.Spec.Main
+	v := runView{Run: r, DataAccess: dview(r), Main: mainView{InlinePythonBytes: m.InlinePythonBytes, InlinePythonSHA256: m.InlinePythonSHA256,
+		Python: m.Python, Jar: m.Jar, MainClass: m.MainClass}}
 	v.Resources.DriverMemory = strconv.Itoa(r.Spec.DriverHeapMi) + "m"
 	v.Resources.ExecutorMemory = strconv.Itoa(r.Spec.ExecutorHeapMi) + "m"
 	v.Resources.MinExecutors = r.Spec.MinExecutors

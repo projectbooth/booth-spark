@@ -5,6 +5,8 @@
 package runs
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -38,6 +40,10 @@ type Main struct {
 	Python       *FileRef `json:"python,omitempty"`
 	Jar          *FileRef `json:"jar,omitempty"`
 	MainClass    string   `json:"mainClass,omitempty"`
+	// InlinePythonBytes and InlinePythonSHA256 describe the inline Python, set by Validate
+	// (whatever a caller sent). They outlive the code itself, which sessions.resultRetention clears.
+	InlinePythonBytes  int    `json:"inlinePythonBytes,omitempty"`
+	InlinePythonSHA256 string `json:"inlinePythonSha256,omitempty"`
 }
 
 // Resources are what a caller may size, within Limits.
@@ -166,6 +172,11 @@ func Validate(s Spec, l Limits) (Validated, error) {
 	}
 	if err := validateMain(s.Main, l); err != nil {
 		return Validated{Spec: s}, err
+	}
+	s.Main.InlinePythonBytes, s.Main.InlinePythonSHA256 = 0, ""
+	if s.Main.InlinePython != "" {
+		sum := sha256.Sum256([]byte(s.Main.InlinePython))
+		s.Main.InlinePythonBytes, s.Main.InlinePythonSHA256 = len(s.Main.InlinePython), hex.EncodeToString(sum[:])
 	}
 	if len(s.Args) > maxArgs {
 		return Validated{Spec: s}, invalid("at most %d args", maxArgs)

@@ -259,7 +259,7 @@ func TestChart_AdmissionPolicies(t *testing.T) {
 	for _, v := range pods.Spec.Variables {
 		vars[v.Name] = v.Expression
 	}
-	if !strings.Contains(vars["allowed"], `"apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211"`) {
+	if !strings.Contains(vars["allowed"], `"ghcr.io/projectbooth/booth-spark-runtime:0.1.0@sha256:e3f096a24dbc1d07e5099b81b422cc248e394a43f92f1f3c915df567c5ad198b"`) {
 		t.Errorf("image allowlist = %s", vars["allowed"])
 	}
 	if !strings.Contains(vars["want"], `{"pool":"compute"}`) {

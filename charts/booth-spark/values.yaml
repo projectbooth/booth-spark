@@ -64,9 +64,12 @@ submit:
 # policies limit what pods it can create; but the API server itself is reachable from user code,
 # so an API-server vulnerability would be within its reach.
 runs:
-  # The Spark image every driver and executor runs (the only image a run namespace admits).
-  # Spark 4.1.3, pinned by its multi-arch index digest (docs/design-v0.md item 1).
-  image: apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211
+  # The Spark image every driver and executor runs (the only Spark image a run namespace admits):
+  # booth-spark's runtime image (images/spark-runtime, published by release.yml for linux/amd64 and
+  # linux/arm64), Spark 4.1.3 plus the JDBC driver, Iceberg, S3A and the module's credential helpers
+  # that data access needs. Pinned by its multi-arch index digest. Plain apache/spark works for runs
+  # without data access; the chart refuses it with dataAccess.enabled.
+  image: ghcr.io/projectbooth/booth-spark-runtime:0.1.0@sha256:e3f096a24dbc1d07e5099b81b422cc248e394a43f92f1f3c915df567c5ad198b
   imagePullPolicy: IfNotPresent
   # Admission (item 7): how many runs may be live at once, install-wide and per workspace (0: no
   # per-workspace cap), and the memory all live runs may use together, each counted at its largest
