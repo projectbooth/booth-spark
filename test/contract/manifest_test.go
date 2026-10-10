@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/projectbooth/booth-spark/internal/sparkconf"
 )
 
 type boothModule struct {
@@ -336,6 +338,39 @@ func TestChart_SubmitMinRole(t *testing.T) {
 		t.Error("submit.minRole=owner not rendered")
 	}
 	helmFails(t, `submit.minRole must be "editor" or "owner"`, "--api-versions", vapAPI, "--set", "submit.minRole=viewer")
+}
+
+// Build step 2's proof run table is test-only: nothing is rendered by default, and a value given
+// is passed through as JSON the backend validates.
+func TestChart_UIProofRunsAreOffByDefault(t *testing.T) {
+	if strings.Contains(string(helmTemplate(t, "templates/deployment.yaml")), "BOOTH_UI_PROOF_RUNS") {
+		t.Error("BOOTH_UI_PROOF_RUNS rendered by default")
+	}
+	dep := string(helmTemplate(t, "templates/deployment.yaml", "--set-json",
+		`uiProof.runs=[{"id":"proof-1","workspace":"acme","submitter":"u-1","url":"http://d:4040"}]`))
+	if !strings.Contains(dep, `BOOTH_UI_PROOF_RUNS`) || !strings.Contains(dep, `\"submitter\":\"u-1\"`) {
+		t.Errorf("proof runs not rendered:\n%s", dep)
+	}
+}
+
+// Step 2's proof driver must run with exactly the Spark UI settings the module will give its own
+// drivers (internal/sparkconf), so the proof proves the real configuration.
+func TestProofDriver_UsesTheModulesUIConf(t *testing.T) {
+	raw, err := os.ReadFile(repoFile("test", "integration", "fixtures", "proof-driver.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	for k, v := range sparkconf.UIConf() {
+		if !strings.Contains(s, "- "+k+"="+v+"\n") {
+			t.Errorf("proof driver lacks --conf %s=%s", k, v)
+		}
+	}
+	for k, v := range sparkconf.UIEnv("proof-1") {
+		if !regexp.MustCompile(`name: ` + k + `\s+value: ` + regexp.QuoteMeta(v) + `\n`).MatchString(s) {
+			t.Errorf("proof driver lacks env %s=%s", k, v)
+		}
+	}
 }
 
 // docs/design-v0.md item 8: the controller's placement uses plain Kubernetes names, passed through.

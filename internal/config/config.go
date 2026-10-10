@@ -4,11 +4,15 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/projectbooth/booth-spark/internal/auth"
+	"github.com/projectbooth/booth-spark/internal/uiproxy"
 )
 
 // Config is booth-spark's full runtime configuration.
@@ -34,6 +38,13 @@ type Config struct {
 	// (ADR 0110: chart value submit.minRole, "editor" by default, "owner" allowed). Viewers never
 	// submit.
 	SubmitMinRole auth.Role
+
+	// UIProofRuns is step 2's fixed run table (BOOTH_UI_PROOF_RUNS, JSON): runs whose Spark UI the
+	// proxy may open, with their workspace, submitter and driver UI URL. It exists only to prove the
+	// Spark UI path through a real core before the module can start drivers itself (step 3, which
+	// replaces it with the module's run records). Empty in every real install; chart value
+	// uiProof.runs.
+	UIProofRuns []uiproxy.Run
 }
 
 // Load reads configuration from the environment.
@@ -76,6 +87,28 @@ func Load() (Config, error) {
 	}
 	if cfg.SubmitMinRole != auth.RoleEditor && cfg.SubmitMinRole != auth.RoleOwner {
 		return Config{}, fmt.Errorf("BOOTH_SUBMIT_MIN_ROLE must be editor or owner (viewers never submit, ADR 0110), not %q", cfg.SubmitMinRole)
+	}
+	if v := os.Getenv("BOOTH_UI_PROOF_RUNS"); v != "" {
+		dec := json.NewDecoder(strings.NewReader(v))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg.UIProofRuns); err != nil {
+			return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: %w", err)
+		}
+		seen := map[string]bool{}
+		for _, r := range cfg.UIProofRuns {
+			u, err := url.Parse(r.UIURL)
+			switch {
+			case !uiproxy.ValidID(r.ID):
+				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: %q is not a valid run id", r.ID)
+			case seen[r.ID]:
+				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: run %q listed twice", r.ID)
+			case r.Workspace == "" || r.Submitter == "":
+				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: run %q needs a workspace and a submitter", r.ID)
+			case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
+				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: run %q has no http(s) url", r.ID)
+			}
+			seen[r.ID] = true
+		}
 	}
 	return cfg, nil
 }

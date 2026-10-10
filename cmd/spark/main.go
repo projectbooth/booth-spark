@@ -63,9 +63,15 @@ func run() error {
 	}
 	log.Printf("iframe identity: trusting issuer=%s audience=%s", cfg.IframeIssuerURL, identity.ModuleID)
 
+	runs := api.StaticRuns{}
+	for _, r := range cfg.UIProofRuns {
+		runs[r.ID] = r
+		log.Printf("spark ui: proof run %s (workspace %s) at %s", r.ID, r.Workspace, r.UIURL)
+	}
+
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{DB: pool, Tokens: tokens, Iframe: iframe, SubmitMinRole: cfg.SubmitMinRole}),
+		Handler:           api.NewRouter(api.Deps{DB: pool, Tokens: tokens, Iframe: iframe, SubmitMinRole: cfg.SubmitMinRole, Runs: runs}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

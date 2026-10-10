@@ -1,0 +1,9 @@
+{
+  "name": "booth-spark-browser-test",
+  "private": true,
+  "type": "module",
+  "description": "Drives a real Chromium through booth-core's iframe proxy to a Spark driver's UI (build step 2). Run by test/integration/ui-path.sh.",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

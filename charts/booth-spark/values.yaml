@@ -53,6 +53,14 @@ submit:
   # editors are not trusted.
   minRole: editor
 
+# TEST ONLY, empty in every real install: a fixed table of runs whose Spark UI the backend will
+# proxy, used by Integration to prove the Spark UI path through a real core (build step 2) before
+# the module can start drivers itself. Step 3 removes it in favour of the module's own run records.
+# Each entry: {id, workspace, submitter (the person's `sub`), url (the driver's UI)}. Only the
+# submitter may open a run's UI (ADR 0110 ruling 4).
+uiProof:
+  runs: []
+
 # Run records live in this module's own database on the shared PostgreSQL cluster (ADR 0014).
 #
 # By default booth-core provisions it (ADR 0053/0054): the BoothModule declares
