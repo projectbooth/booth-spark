@@ -84,6 +84,13 @@ func TestBuild_ExecutorAccountHasNothing(t *testing.T) {
 	if tmpl.Spec.ServiceAccountName != "executor" || tmpl.Spec.AutomountServiceAccountToken == nil || *tmpl.Spec.AutomountServiceAccountToken {
 		t.Errorf("executor template account: %q automount %v", tmpl.Spec.ServiceAccountName, tmpl.Spec.AutomountServiceAccountToken)
 	}
+	// Spark mounts its own volume at spark.local.dir on executors: the template must not mount
+	// anything there (Integration found "/tmp: must be unique").
+	for _, m := range tmpl.Spec.Containers[0].VolumeMounts {
+		if m.MountPath == localDir {
+			t.Errorf("the executor template mounts %s, where Spark adds its own volume", localDir)
+		}
+	}
 	if tmpl.Labels[LabelWorkspace] != "acme" || tmpl.Labels[LabelComponent] != "executor" || tmpl.Spec.NodeSelector["pool"] != "compute" || len(tmpl.Spec.Tolerations) != 1 {
 		t.Errorf("executor template labels/placement: %v %v %v", tmpl.Labels, tmpl.Spec.NodeSelector, tmpl.Spec.Tolerations)
 	}
@@ -135,6 +142,16 @@ func TestBuild_DriverPod(t *testing.T) {
 	}
 	if !strings.HasSuffix(args, "/opt/booth/run/main.py 10") {
 		t.Errorf("the application and its args come last: %s", args)
+	}
+	if !strings.Contains(args, "spark.local.dir="+localDir) {
+		t.Error("spark.local.dir is not the dedicated path")
+	}
+	mounted := false
+	for _, m := range c.VolumeMounts {
+		mounted = mounted || m.MountPath == localDir
+	}
+	if !mounted {
+		t.Error("the driver has no writable local dir")
 	}
 	env := map[string]string{}
 	for _, e := range c.Env {

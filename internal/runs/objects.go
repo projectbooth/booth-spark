@@ -39,6 +39,7 @@ const (
 	BlockManagerPort    = 7079
 	UIPort              = 4040
 	runMountPath        = "/opt/booth/run"
+	localDir            = "/var/data/spark-local"
 	executorTemplateKey = "executor-template.yaml"
 	mainKey             = "main.py"
 )
@@ -295,8 +296,10 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		"spark.dynamicAllocation.executorIdleTimeout":               "60s",
 		// RPC authentication between this run's driver and executors (Spark generates the secret).
 		"spark.authenticate": "true",
-		"spark.local.dir":    "/tmp",
-		"spark.jars.ivy":     "/tmp/.ivy2",
+		// Not /tmp: Spark mounts its own emptyDir at the local dir on every executor, and the
+		// executor template already mounts /tmp ("must be unique", found by Integration).
+		"spark.local.dir": localDir,
+		"spark.jars.ivy":  "/tmp/.ivy2",
 	}
 	for k, val := range sparkconf.UIConf() {
 		conf[k] = val
@@ -320,8 +323,10 @@ func driverPod(r Run, c Cluster, api APIEndpoint, labels map[string]string, memM
 	vols, mounts := scratchVolumes()
 	vols = append(vols, corev1.Volume{Name: "run", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: AppConfigMap},
-	}}})
-	mounts = append(mounts, corev1.VolumeMount{Name: "run", MountPath: runMountPath, ReadOnly: true})
+	}}}, corev1.Volume{Name: "spark-local", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr(resource.MustParse("2Gi"))}}})
+	// The executors' local dir is Spark's own emptyDir; the driver's, which the backend creates, is this one.
+	mounts = append(mounts, corev1.VolumeMount{Name: "run", MountPath: runMountPath, ReadOnly: true},
+		corev1.VolumeMount{Name: "spark-local", MountPath: localDir})
 	env := []corev1.EnvVar{{Name: "HOME", Value: "/tmp"}}
 	for k, val := range sparkconf.UIEnv(r.ID) {
 		env = append(env, corev1.EnvVar{Name: k, Value: val})
