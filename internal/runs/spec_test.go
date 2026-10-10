@@ -99,3 +99,17 @@ func TestNewID(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+// The module, not the caller, describes the inline Python: its length and SHA-256.
+func TestValidate_InlinePythonDigest(t *testing.T) {
+	v, err := Validate(Spec{Name: "pi", Main: Main{InlinePython: "print(1)", InlinePythonBytes: 1, InlinePythonSHA256: "forged"}}, testLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Main.InlinePythonBytes != 8 || len(v.Main.InlinePythonSHA256) != 64 {
+		t.Errorf("main = %+v", v.Main)
+	}
+	if v.Main.InlinePythonSHA256 == "forged" {
+		t.Error("a caller's own SHA-256 was kept")
+	}
+}

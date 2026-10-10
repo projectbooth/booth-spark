@@ -14,7 +14,8 @@
 #     and the next statement runs;
 #   - an orphaned run namespace (no live run in the database) is reaped;
 #   - result retention (sessions.resultRetention=4m here): an ended session's statement code,
-#     output and error, and an ended application's log, are there at first, then cleared.
+#     output and error, and an ended application's log and inline Python (in the module's database;
+#     its length and SHA-256 stay), are there at first, then cleared.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
@@ -34,7 +35,9 @@ ok() { echo "ok: $*"; }
 step "an editor's session: statements in order, state kept, a failure doesn't end it"
 fresh
 # An application that ends at once, for the retention check at the end.
-app=$(submit "$T_editor" retained "print('RETAINED-LOG-LINE')" '{"resources":{"executors":{"max":0}}}')
+app_code="print('RETAINED-LOG-LINE')"
+app_sha=$(printf '%s' "$app_code" | sha256sum | cut -c1-64)
+app=$(submit "$T_editor" retained "$app_code" '{"resources":{"executors":{"max":0}}}')
 s=$(start_session "$T_editor" explore '{"resources":{"executors":{"max":1}}}')
 echo "session $s"
 WAIT=300 wait_session "$T_editor" "$s" running >/dev/null
@@ -57,7 +60,9 @@ wait_session "$T_editor" "$s" running >/dev/null
 ok "sql, python, a failure (with its traceback) and the session goes on, state kept"
 # Control for the retention check: the application ended, and its log is there.
 WAIT=300 wait_state "$T_editor" "$app" succeeded >/dev/null
-logs "$T_editor" "$app" | grep -q RETAINED-LOG-LINE || fail "control: the ended application's log isn't there"
+grep -q RETAINED-LOG-LINE <<<"$(logs "$T_editor" "$app")" || fail "control: the ended application's log isn't there"
+row=$(module_db "SELECT spec->'main'->>'inlinePython', spec->'main'->>'inlinePythonBytes', spec->'main'->>'inlinePythonSha256' FROM runs WHERE id = '$app'")
+[ "$row" = "$app_code|${#app_code}|$app_sha" ] || fail "control: the ended application's code, length and hash in the database: '$row'"
 
 step "who sees a session: its submitter and the workspace's owners only"
 fresh
@@ -213,6 +218,10 @@ done
 v1 "$T_editor" GET "/applications/$app/logs?tail=5000"
 [ "$code" = 410 ] && echo "$body" | grep -q '"cleared"' || fail "the cleared application's log: $code $body"
 v1 "$T_editor" GET "/applications/$app"; echo "$body" | jq_ "d['state']" | grep -qx succeeded || fail "the cleared application lost its state: $body"
-ok "after 4m: statement code, output and error and both logs cleared (410 cleared); states and timestamps kept"
+[ "$(echo "$body" | jq_ "d['main']['inlinePythonSha256']")" = "$app_sha" ] || fail "the cleared application's view lost its code's SHA-256: $body"
+grep -q RETAINED-LOG-LINE <<<"$body" && fail "the application's view shows its code"
+row=$(module_db "SELECT coalesce(spec->'main'->>'inlinePython', '<gone>'), spec->'main'->>'inlinePythonBytes', spec->'main'->>'inlinePythonSha256' FROM runs WHERE id = '$app'")
+[ "$row" = "<gone>|${#app_code}|$app_sha" ] || fail "the cleared application's code, length and hash in the database: '$row'"
+ok "after 4m: statement code, output and error, both logs and the application's inline Python cleared; its length and SHA-256, states and timestamps kept"
 
 echo "all session checks passed"

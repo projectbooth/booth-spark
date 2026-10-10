@@ -112,6 +112,17 @@ ns_gone() {
   fail "namespace $1 still exists: $out"
 }
 
+# module_db SQL: runs one query against booth-spark's own database (core's bundled Postgres, through
+# the DSN core delivered) from a throwaway psql pod in the module's namespace, which core labels as
+# a database client; prints the unaligned result. For what no API shows (an application's code).
+module_db() {
+  local dsn name
+  dsn=$(kubectl -n booth-spark get secret booth-database-credentials -o jsonpath='{.data.dsn}' | base64 -d)
+  name=psql-$(date +%s%N | tail -c 7)
+  kubectl -n booth-spark run "$name" --rm -i --quiet --restart=Never --image=postgres:16-alpine \
+    --env="DSN=$dsn" --command -- sh -c 'psql "$DSN" -tA -v ON_ERROR_STOP=1 -c "$0"' "$1" 2>/dev/null
+}
+
 # --- sessions (build step 4) ---
 
 # start_session TOKEN NAME [EXTRA_JSON_FIELDS]: starts a session; prints its id.

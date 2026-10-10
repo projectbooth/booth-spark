@@ -30,6 +30,7 @@ then, this page holds the limits the coordinator ruled must be written down.
 `sessions.resultRetention` (default `168h`, 7 days) is how long an ended run's content is kept.
 After that, the controller clears:
 - a session's statement code, output and error;
+- an application's inline Python (its length and SHA-256 stay, and its view shows them);
 - the driver log tail kept when any run (session or application) ended.
 
 The run's state, reason and timestamps stay, and `contentClearedAt` records when it was cleared. A
@@ -63,8 +64,9 @@ Known limits, stated plainly:
   can read and, as an editor's run, write: the whole workspace schema and warehouse. With open
   egress it can also send that anywhere on the internet (ADR 0110, "Open egress"). Where editors
   aren't trusted, set `runs.egress.mode=closed` or `submit.minRole=owner`.
-- **One storage location per bucket.** A run naming two locations in one bucket is refused at
-  launch; name their common parent instead. The warehouse and one storage location may share a
-  bucket.
+- **One storage location per bucket** (a v0 limit, accepted in ADR 0110's step 5 rulings). S3A
+  takes credentials per bucket, so a run naming two locations in one bucket is refused at launch,
+  with that reason; name their common parent instead. The warehouse (`s3://`) and one storage
+  location (`s3a://`) may share a bucket.
 - **Runs submitted with a workload token** (a pipeline task) get no data access in this version
   (ADR 0110 ruling 5).

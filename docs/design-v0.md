@@ -752,8 +752,9 @@ the Spark image it starts from, most of that the SDK bundle. The
   (`booth.projectbooth.io/database-client=true`; decision). booth-database's Postgres admits only
   labelled namespaces; core labels module namespaces, and a run's namespace is the module's own.
   The fence policy already allows extra labels.
-- **A demoted submitter ends the run** (decision). The note says a demoted editor's next mint is a
-  viewer token; it doesn't say what happens to a live run. Its sidecars hold read-write leases (an
+- **A demoted submitter ends the run** (a departure from the note, accepted in ADR 0110's step 5
+  rulings). The note says a demoted editor's next mint is a viewer token, and so implies the run
+  carries on as a viewer's; it doesn't. Its sidecars hold read-write leases (an
   hour for Postgres), so a run that started as an editor's ends once its token comes back viewer,
   and its namespace goes, as for a refused mint. A run that started as a viewer's goes on.
 - **A refusal while the run lives** (the submitter lost access, the module isn't entitled, or a
@@ -797,3 +798,16 @@ Open questions, for the coordinator (in the PR too):
    stays in its run record. Clear it too?
 4. **The `data` job is not a required check.** Branch protection requires go, helm-lint, image,
    standins and real-core. Add `data`?
+
+Ruled 2026-10-10 (ADR 0110, step 5 rulings), built in step 5b:
+
+1. The runtime image is published to GHCR by `release.yml` (a `vX.Y.Z` tag; linux/amd64 and
+   linux/arm64), and its digest is the chart's `runs.image` default. The chart still refuses
+   `dataAccess.enabled` with plain `apache/spark`.
+2. One storage location per bucket is a v0 limit, in `docs/operations.md`.
+3. Retention also clears an application's inline Python. Its length and SHA-256 are recorded when
+   it is submitted (`main.inlinePythonBytes`, `main.inlinePythonSha256`, set by the module whatever a
+   caller sends), stay after the code is cleared, and are what a run's view shows: the code itself
+   is never shown. Store and API tests; `sessions.sh` reads the module's database before and after.
+4. `data` is a required check.
+5. A demoted submitter ends the run: accepted, recorded above as a departure from the note.

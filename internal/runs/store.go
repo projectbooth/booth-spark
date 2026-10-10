@@ -301,12 +301,13 @@ func (s *Store) RequestStop(ctx context.Context, id string) error {
 }
 
 // ClearContent clears the content of every run that ended before `before` and isn't cleared yet:
-// its log tail and session bearer, and its statements' code, output and error. Their state and
+// its log tail, its bearers, an application's inline Python (its length and SHA-256 stay), and its
+// statements' code, output and error. Their state and
 // timestamps stay. It returns how many runs it cleared.
 func (s *Store) ClearContent(ctx context.Context, before, at time.Time) (int, error) {
 	n := 0
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', data_bearer = '', content_cleared_at = $2
+		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', data_bearer = '', spec = spec #- '{main,inlinePython}', content_cleared_at = $2
 			WHERE finished_at IS NOT NULL AND finished_at < $1 AND content_cleared_at IS NULL RETURNING id`, before, at)
 		if err != nil {
 			return err

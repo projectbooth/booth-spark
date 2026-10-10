@@ -2,6 +2,8 @@ package runs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 	"time"
@@ -75,8 +77,17 @@ func TestStore_ClearContent(t *testing.T) {
 	if tail, _ := s.LogTail(ctx, app.ID); tail != "" {
 		t.Errorf("old application's log tail kept: %q", tail)
 	}
-	if a, _ := s.Get(ctx, app.ID); a.ContentClearedAt == nil || a.State != Succeeded {
+	a, _ := s.Get(ctx, app.ID)
+	if a.ContentClearedAt == nil || a.State != Succeeded {
 		t.Errorf("old application: %+v", a)
+	}
+	// Its inline Python goes; its length and SHA-256 stay (step 5 ruling 3).
+	sum := sha256.Sum256([]byte("print(1)"))
+	if a.Spec.Main.InlinePython != "" || a.Spec.Main.InlinePythonBytes != 8 || a.Spec.Main.InlinePythonSHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("old application's main after clearing = %+v", a.Spec.Main)
+	}
+	if l, _ := s.Get(ctx, live.ID); l.Spec.Main.InlinePython != "print(1)" {
+		t.Errorf("a live run's code was cleared: %+v", l.Spec.Main)
 	}
 
 	// Kept: a session ended inside the retention, and a live run.
