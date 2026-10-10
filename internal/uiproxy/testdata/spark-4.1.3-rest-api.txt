@@ -1,0 +1,43 @@
+# Spark 4.1.3's REST API, every endpoint, each with booth-spark's decision. Lines are
+# "<allow|deny> <path under /api/v1> <where it comes from>". Placeholders in brackets are substituted
+# with sample values by TestAllowlist_EveryDocumentedEndpointIsDecided.
+#
+# "docs": https://spark.apache.org/docs/4.1.3/monitoring.html#rest-api (all 26 endpoints listed there).
+# "src": Spark 4.1.3's core/.../status/api/v1/OneApplicationResource.scala and StagesResource.scala,
+# which also serve these (the UI's own JavaScript calls them).
+allow /version docs
+allow /applications docs
+allow /applications/[app-id]/jobs docs
+allow /applications/[app-id]/jobs/[job-id] docs
+allow /applications/[app-id]/stages docs
+allow /applications/[app-id]/stages/[stage-id] docs
+allow /applications/[app-id]/stages/[stage-id]/[stage-attempt-id] docs
+allow /applications/[app-id]/stages/[stage-id]/[stage-attempt-id]/taskSummary docs
+allow /applications/[app-id]/stages/[stage-id]/[stage-attempt-id]/taskList docs
+allow /applications/[app-id]/executors docs
+allow /applications/[app-id]/allexecutors docs
+allow /applications/[app-id]/storage/rdd docs
+allow /applications/[app-id]/storage/rdd/[rdd-id] docs
+allow /applications/[app-id]/environment docs
+allow /applications/[app-id]/sql docs
+allow /applications/[app-id]/sql/[execution-id] docs
+allow /applications/[app-id]/streaming/statistics docs
+allow /applications/[app-id]/streaming/receivers docs
+allow /applications/[app-id]/streaming/receivers/[stream-id] docs
+allow /applications/[app-id]/streaming/batches docs
+allow /applications/[app-id]/streaming/batches/[batch-id] docs
+allow /applications/[app-id]/streaming/batches/[batch-id]/operations docs
+allow /applications/[app-id]/streaming/batches/[batch-id]/operations/[outputOp-id] docs
+# Full stack traces of every thread, served even with spark.ui.threadDumpsEnabled=false (step 2).
+deny /applications/[app-id]/executors/[executor-id]/threads docs
+# The event-log download (a zip of everything the application recorded).
+deny /applications/[base-app-id]/logs docs
+deny /applications/[base-app-id]/[attempt-id]/logs docs
+# The UI's own JavaScript (executorspage.js, stagepage.js).
+allow /applications/[app-id] src
+allow /applications/[app-id]/allmiscellaneousprocess src
+allow /applications/[app-id]/stages/[stage-id]/[stage-attempt-id]/taskTable src
+# Every resource again under an attempt id: no attempts exist for a live driver on Kubernetes.
+deny /applications/[app-id]/[attempt-id]/jobs src
+deny /applications/[app-id]/[attempt-id]/sql src
+deny /applications/[app-id]/[attempt-id]/streaming/statistics src

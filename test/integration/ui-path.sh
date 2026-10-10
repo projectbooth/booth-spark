@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build step 2 (docs/design-v0.md item 5): a real Spark driver's UI (fixtures/proof-driver.yaml)
-# through booth-core's real iframe proxy and assertion, and booth-spark's proxy:
+# Build steps 2 and 3 (docs/design-v0.md item 5): a real run's Spark UI, submitted by editor-user
+# through the /v1 API, through booth-core's real iframe proxy and assertion, and booth-spark's
+# proxy (default-deny allowlist, internal/uiproxy/allow.go):
 #   - its submitter sees it, with links, redirects, static assets and the REST API under the run's
 #     prefix, and secrets redacted on the Environment page;
 #   - kill, thread-dump and heap-histogram actions are refused, whatever the method;
@@ -12,9 +13,30 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$here/lib.sh"
-port=${CORE_PORT:-18080}
+. "$here/api.sh"
+port=$core_port
 
-password=$(kubectl -n keycloak get secret realcore-test-password -o jsonpath='{.data.password}' | base64 -d)
+read -r -d '' app <<'PY' || true
+# A few jobs (one with a description), a SQL query, then the driver stays up so its UI can be
+# browsed.
+import time
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.getOrCreate()
+sc = spark.sparkContext
+sc.setJobDescription("booth proof job")
+print("sum", sc.parallelize(range(100000), 4).map(lambda x: x * x).sum(), flush=True)
+sc.setJobDescription(None)
+spark.range(1000).selectExpr("id % 7 as k").groupBy("k").count().collect()
+print("PROOF-READY", flush=True)
+time.sleep(1200)
+PY
+T_editor=$(tok editor-user)
+step "editor-user submits a run whose UI stays up"
+RUN=$(submit "$T_editor" ui-proof "$app" '{"conf":{"spark.sql.shuffle.partitions":"4"},"resources":{"executors":{"min":1,"max":1}}}')
+echo "run $RUN"
+wait_state "$T_editor" "$RUN" running >/dev/null
+for _ in $(seq 1 180); do logs "$T_editor" "$RUN" | grep -q PROOF-READY && break; sleep 2; done
+logs "$T_editor" "$RUN" | grep -q PROOF-READY || fail "the run never got through its jobs: $(logs "$T_editor" "$RUN" | tail -30)"
 
 read -r -d '' common <<'SH' || true
 KC=http://keycloak.keycloak.svc:8080/realms/booth/protocol/openid-connect
@@ -36,7 +58,7 @@ session() { # USER WORKSPACE: core's iframe session cookie
 SH
 
 read -r -d '' script <<'SH' || true
-P=/iframe/spark/runs/proof-1/ui
+P=/iframe/spark/runs/$RUN/ui
 ui() { curl -s -H "Cookie: booth_iframe_session=$1" "$CORE$2"; }
 uistatus() { c=$1; shift; status -H "Cookie: booth_iframe_session=$c" "$@"; }
 c_editor=$(session editor-user acme-analytics)
@@ -46,19 +68,21 @@ echo "# the submitter sees the run's UI, all of it under the run's prefix"
 loc=$(curl -s -o /dev/null -D - -H "Cookie: booth_iframe_session=$c_editor" "$CORE$P/" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
 check "Spark's root redirect is rewritten under the prefix" "$loc" "$P/jobs/"
 jobs=$(ui "$c_editor" "$P/jobs/")
-contains "the jobs page renders through core and the proxy" "$jobs" "booth-spark-ui-proof"
+contains "the jobs page renders through core and the proxy (Spark's app name is the run id)" "$jobs" "$RUN"
 contains "the job with a description is listed" "$jobs" "booth proof job"
 contains "Spark's UI root is the run's prefix (APPLICATION_WEB_PROXY_BASE)" "$jobs" "setUIRoot('$P')"
 contains "links point under the prefix" "$jobs" "href=\"$P/stages/\""
 check "a static asset loads" "$(uistatus "$c_editor" "$CORE$P/static/webui.js")" 200
 apps=$(ui "$c_editor" "$P/api/v1/applications")
-contains "the REST API answers" "$apps" '"name" : "booth-spark-ui-proof"'
+contains "the REST API answers" "$apps" "\"name\" : \"$RUN\""
 app=$(echo "$apps" | sed -n 's/.*"id" : "\([^"]*\)".*/\1/p' | head -1)
 check "the executors REST endpoint the Executors tab uses" "$(uistatus "$c_editor" "$CORE$P/api/v1/applications/$app/allexecutors")" 200
 env=$(ui "$c_editor" "$P/environment/")
-contains "the Environment page shows the conf name" "$env" "spark.booth.proof.token"
-check "... but not its value (spark.redaction.regex)" "$(echo "$env" | grep -c proof-value-must-not-appear)" 0
-check "... nor through the REST API" "$(ui "$c_editor" "$P/api/v1/applications/$app/environment" | grep -c proof-value-must-not-appear)" 0
+# The driver's token path is set as spark.kubernetes.authenticate.oauthTokenFile, a name the
+# redaction regex matches: the page shows the name, never the value.
+contains "the Environment page shows a token-named conf" "$env" "spark.kubernetes.authenticate.oauthTokenFile"
+check "... but not its value (spark.redaction.regex)" "$(echo "$env" | grep -c /var/run/secrets/kubernetes.io/serviceaccount/token)" 0
+check "... nor through the REST API" "$(ui "$c_editor" "$P/api/v1/applications/$app/environment" | grep -c /var/run/secrets/kubernetes.io/serviceaccount/token)" 0
 hdrs=$(curl -s -o /dev/null -D - -H "Cookie: booth_iframe_session=$c_editor" "$CORE$P/jobs/" | tr -d '\r')
 check "no cookie from the driver on the shell's origin" "$(echo "$hdrs" | grep -ci '^set-cookie: ' | tr -d ' ')" 0
 
@@ -79,19 +103,18 @@ done
 c=$(session outsider-user other-team)
 check "outsider-user (another workspace): the run doesn't exist for them" "$(uistatus "$c" "$CORE$P/jobs/")" 404
 check "no session at all" "$(status "$CORE$P/jobs/")" 401
-check "straight to the Service, no assertion" "$(status "http://booth-spark.booth-spark.svc:8080/runs/proof-1/ui/jobs/")" 401
+check "straight to the Service, no assertion" "$(status "http://booth-spark.booth-spark.svc:8080/runs/$RUN/ui/jobs/")" 401
 SH
 
 step "the Spark UI through core (curl)"
-checked ui-path "PW='$password'
+checked ui-path "PW='$password'; RUN='$RUN'
 $common
 $script"
 
-step "port-forward booth-core to localhost:$port for the browser"
-kubectl -n booth-system port-forward svc/booth-core "$port:8080" >/tmp/booth-spark-core-pf.log 2>&1 &
-pf=$!
-trap 'kill $pf 2>/dev/null || true' EXIT
-for _ in $(seq 1 30); do curl -s -o /dev/null "http://localhost:$port/healthz" && break; sleep 1; done
+step "a pod outside the run can't reach its driver UI port; the backend's proxy can (above)"
+out=$(checked ui-fence "check \"control: keycloak from the probe namespace\" \"\$(status --max-time 5 http://keycloak.keycloak.svc:8080/realms/booth)\" 200
+check \"the run's driver UI, straight from the probe namespace (dropped, not refused)\" \"\$(curl -s -o /dev/null --connect-timeout 5 -w '%{http_code} %{errormsg}' http://driver.bspark-$RUN.svc:4040/jobs/ | grep -c -i 'timed out')\" 1")
+echo "$out"
 
 step "fresh iframe URLs for the browser (core's navigation token lives one minute)"
 urls=$(probe ui-urls "PW='$password'
@@ -103,5 +126,7 @@ operator_url=$(echo "$urls" | awk '$1=="operator" {print $2}')
 [ -n "$editor_url" ] && [ -n "$operator_url" ] || fail "could not mint iframe URLs: $(echo "$urls" | sed 's/\(booth_iframe_token=\)[^ ]*/\1<redacted>/g')"
 
 step "Chromium through core's iframe proxy"
-(cd "$here/browser" && node spark-ui.mjs "http://localhost:$port" "$editor_url" "$operator_url")
+(cd "$here/browser" && node spark-ui.mjs "http://localhost:$port" "$editor_url" "$operator_url" "$RUN")
+v1 "$T_editor" POST "/applications/$RUN/stop" >/dev/null
+wait_state "$T_editor" "$RUN" stopped >/dev/null
 echo "all Spark UI path checks passed"

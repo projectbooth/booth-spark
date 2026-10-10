@@ -61,9 +61,21 @@ jobs:
         env:
           # A missing database must fail the build, never silently skip its tests green.
           BOOTH_TEST_REQUIRE_EMULATORS: "1"
+          BOOTH_TEST_OPENAPI_OUT: ${{ runner.temp }}/openapi.yaml
         run: |
           eval "$(sh hack/test-env.sh)"
           go test -race -count=1 ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22" # @redocly/cli 2.x needs >=20.19 or >=22.12
+
+      # The /v1 interface's OpenAPI 3.1 document (internal/api/openapi/v1.yaml, written out by
+      # TestOpenAPI_MatchesTheRoutes) must pass a real OpenAPI linter, as booth-api's does.
+      - name: Lint the OpenAPI document
+        run: |
+          test -s "${{ runner.temp }}/openapi.yaml"
+          npx -y @redocly/cli@2.53.3 lint "${{ runner.temp }}/openapi.yaml" --config hack/redocly.yaml
 
       - name: Database logs on failure
         if: failure()

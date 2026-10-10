@@ -1,0 +1,130 @@
+{{- /*
+The Kubernetes rights of booth-spark (docs/design-v0.md item 3, ADR 0110 rulings 2 and 3). Every
+rule here is pinned by TestChart_RBACIsExactlyTheDesign; change both together.
+
+Cluster-wide, the backend may only:
+  - create, delete, get and list namespaces (admission policy "fence" limits create and delete to
+    its own labelled bspark-<run> namespaces; it has no update or patch, so it can't label one);
+  - create RoleBindings (the fence limits them to its own namespaces and to exactly two
+    ClusterRoles, with fixed subjects);
+  - bind exactly those two ClusterRoles, and read the driver ClusterRole (the run namespaces' owner);
+  - read the "kubernetes" EndpointSlice in default (the API server's address for the driver's
+    NetworkPolicy).
+It never holds cluster-wide pods, secrets or pods/log: everything it does inside a run's
+namespace runs on the RoleBinding to "<fullname>-run-controller" it creates there first.
+*/ -}}
+{{- $fullname := include "booth-spark.fullname" . }}
+{{- $sa := include "booth-spark.serviceAccountName" . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}-controller
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [create, delete, get, list]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames: [{{ $fullname }}-driver, {{ $fullname }}-run-controller]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [get]
+    resourceNames: [{{ $fullname }}-driver]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullname }}-controller
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullname }}-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+# The API server's address, for each run's driver-to-API NetworkPolicy. Only this one object.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-api-endpoints
+  namespace: default
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get]
+    resourceNames: [kubernetes]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-api-endpoints
+  namespace: default
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-api-endpoints
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+# What the backend does inside one run's namespace, bound there (only there) by the backend itself
+# right after creating it: exactly the calls internal/runs/launcher.go makes. No Secret read, no
+# exec, no update of anything.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}-run-controller
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts, configmaps, services, resourcequotas, limitranges]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [create]
+---
+# The driver's rights, in its own run's namespace only (ADR 0110 ruling 3, a documented departure
+# from ADR 0057): what Spark 4.1.3's driver calls to run executors, measured against the pinned image
+# (docs/design-v0.md, "As built: step 3"). The run namespaces are owned by this ClusterRole, so
+# deleting it (uninstalling the chart, by any route) deletes them all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}-driver
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create, deletecollection]
+  - apiGroups: [""]
+    resources: [services, persistentvolumeclaims]
+    verbs: [deletecollection]

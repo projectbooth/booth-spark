@@ -56,14 +56,24 @@ else
 fi
 checked verify-http "$script"
 
-step "no Kubernetes API access for the module's service account (step 3 adds exactly the fenced rights)"
+step "the cluster serves ValidatingAdmissionPolicy, and both of booth-spark's policies are installed and bound"
+kubectl api-resources --api-group=admissionregistration.k8s.io -o name | grep -qx validatingadmissionpolicies.admissionregistration.k8s.io   || fail "this cluster doesn't serve ValidatingAdmissionPolicy (the chart should have refused to install)"
+for p in booth-spark-run-pods booth-spark-fence; do
+  kubectl get validatingadmissionpolicy "$p" >/dev/null || fail "policy $p missing"
+  kubectl get validatingadmissionpolicybinding "$p" >/dev/null || fail "binding $p missing"
+done
+echo "ok: both policies"
+
+step "the backend's Kubernetes rights are exactly the fenced ones (docs/design-v0.md item 3), live"
 sa="system:serviceaccount:$ns:booth-spark"
-for args in "get secrets -n $ns" "list pods -n $ns" "create pods -n $ns" "create namespaces" "get secrets -n kube-system" "create rolebindings -n $ns"; do
+for args in "create namespaces" "delete namespaces" "list namespaces" "create rolebindings -n some-ns"             "get endpointslices.discovery.k8s.io/kubernetes -n default" "get clusterroles/booth-spark-driver"             "bind clusterroles/booth-spark-driver" "bind clusterroles/booth-spark-run-controller"; do
+  test "$(kubectl auth can-i $args --as="$sa")" = "yes" || fail "the backend needs, and lacks: $args"
+done
+for args in "get secrets -A" "list pods -A" "get pods --subresource=log -n kube-system" "create pods -n kube-system"             "update namespaces" "patch namespaces" "bind clusterroles/cluster-admin" "get clusterroles/cluster-admin"             "create clusterrolebindings" "get endpointslices.discovery.k8s.io -n kube-system" "create deployments.apps -n $ns"; do
   test "$(kubectl auth can-i $args --as="$sa")" = "no" || fail "unexpectedly ALLOWED: $args"
 done
-test "$(kubectl -n "$ns" get pod -l app.kubernetes.io/name=booth-spark -o jsonpath='{.items[0].spec.automountServiceAccountToken}')" = "false" \
-  || fail "the backend pod mounts a service-account token"
-echo "ok: no API access, no token mounted"
+test "$(kubectl -n "$ns" get pod -l app.kubernetes.io/name=booth-spark -o jsonpath='{.items[0].spec.automountServiceAccountToken}')" = "true"   || fail "the backend pod doesn't mount its token"
+echo "ok: exactly the fenced rights"
 
 if [ "${REAL_CORE:-}" = "1" ]; then
   step "booth-core's health reconciler sees the module as Healthy"

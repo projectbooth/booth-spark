@@ -9,9 +9,10 @@
 #   - the iframe routes verify core's real X-Booth-Identity assertion (ADR 0069).
 # Core runs with its bundled Keycloak and Ingress off, as core's own kind-deploy job runs it.
 #
-# and (build step 2) a hand-started Spark driver (fixtures/proof-driver.yaml) whose UI the backend
-# proxies, listed in the chart's test-only uiProof.runs with editor-user (fixed id in the realm) as
-# its submitter, for ui-path.sh.
+# and booth-spark's runs (step 3) use the Spark image given, loaded into the cluster, with every
+# run's driver and executors placed by nodeSelector booth.projectbooth.io/pool=compute (this script
+# labels the node), sized for a CI runner. BOOTH_SPARK_RELEASE (default booth-spark) names the
+# release; uninstall.sh reinstalls as "spark", the name booth-core's module uninstall uses.
 #
 #   test/integration/deploy-realcore.sh <booth-core checkout> <core image> <booth-spark image> <Spark image>
 #
@@ -23,7 +24,6 @@ core_dir=$1
 core_image=$2
 image=$3
 spark_image=$4
-editor_sub=0a000000-0000-4000-8000-000000000002 # editor-user's id in realcore/realm-booth.json.tpl
 ns=booth-spark
 issuer=http://keycloak.keycloak.svc:8080/realms/booth
 jwks=http://keycloak.keycloak.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs
@@ -59,23 +59,13 @@ helm upgrade --install booth-core "$core_dir/charts/booth-core" --namespace boot
   --wait --timeout 10m
 kubectl -n booth-system rollout status deploy/booth-core --timeout=300s
 
-echo "--- the proof driver (a real Spark $spark_image driver, local mode) for the Spark UI path"
-sed "s|__SPARK_IMAGE__|$spark_image|" "$repo/test/integration/fixtures/proof-driver.yaml" | kubectl apply -f - >/dev/null
+echo "--- the node is the Spark pool (runs.*.nodeSelector)"
+kubectl label nodes --all booth.projectbooth.io/pool=compute --overwrite >/dev/null
 
 echo "--- booth-spark with chart defaults (database from core) and every identity setting"
 kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
 # No --wait on purpose: the pod cannot start until core has written booth-database-credentials,
 # which it does only after it sees the BoothModule this install creates. verify.sh waits for that.
-helm upgrade --install booth-spark "$repo/charts/booth-spark" --namespace "$ns" \
-  --set image.repository="${image%:*}" --set image.tag="${image##*:}" --set image.pullPolicy=Never \
-  --set oidc.issuerUrl="$issuer" --set oidc.clientId=booth-design \
-  --set oidc.jwksUrl="$jwks" --set oidc.workloadIssuerUrl="$workload_issuer" \
-  --set-json "uiProof.runs=[{\"id\":\"proof-1\",\"workspace\":\"acme-analytics\",\"submitter\":\"$editor_sub\",\"url\":\"http://proof-driver.booth-spark-proof.svc:4040\"}]"
+bash "$repo/test/integration/install-spark.sh" "$image" "$spark_image"
 
 kubectl -n keycloak rollout status deploy/keycloak --timeout=600s
-kubectl -n booth-spark-proof wait --for=condition=Ready pod/proof-driver --timeout=600s
-for _ in $(seq 1 60); do
-  kubectl -n booth-spark-proof logs proof-driver 2>/dev/null | grep -q PROOF-READY && break
-  sleep 2
-done
-kubectl -n booth-spark-proof logs proof-driver | grep -q PROOF-READY || { kubectl -n booth-spark-proof logs proof-driver | tail -40; echo "FAIL: the proof driver never ran its jobs" >&2; exit 1; }

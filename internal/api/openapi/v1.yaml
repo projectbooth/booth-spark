@@ -1,0 +1,321 @@
+openapi: 3.1.0
+info:
+  title: booth-spark job-submission API
+  version: "1.0.0"
+  summary: Submit and manage Spark applications on Project Booth.
+  description: |
+    The published interface of booth-spark (docs/design-v0.md item 6). Reached through booth-core's
+    gateway at `/modules/spark/v1/...` with a bearer token and the `X-Workspace` header: a person's
+    OIDC token, or booth-core's workload token for an unattended caller such as a pipeline task
+    (ADR 0059).
+
+    Versioning: within v1, changes are additive only (new optional fields, new endpoints).
+    Anything breaking is `/v2`, served alongside `/v1` for at least one minor release.
+
+    Who may do what (docs/design-v0.md item 3): anyone in the workspace sees its runs; submitting
+    needs `submit.minRole` (editor by default, owner allowed; never viewer); stopping a run or
+    reading its logs needs its submitter, a workspace owner or a platform operator. A run's Spark UI
+    opens in the shell for its submitter only (`uiPath`).
+
+    Not in this version: sessions and statements (a later release), data access (`dataAccess`,
+    `main.python`, `main.jar` are refused with 422), and any data access for runs submitted with a
+    workload token (ADR 0110 ruling 5).
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: /modules/spark/v1
+    description: Through booth-core's gateway
+security:
+  - bearer: []
+tags:
+  - name: identity
+    description: Who the caller is, as this module derives it
+  - name: applications
+    description: Batch Spark applications, one namespace per run
+paths:
+  /me:
+    get:
+      tags: [identity]
+      operationId: getMe
+      summary: The caller, as booth-spark derived it from the verified token
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+      responses:
+        "200":
+          description: The caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /applications:
+    get:
+      tags: [applications]
+      operationId: listApplications
+      summary: The workspace's runs, newest first (at most 200)
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - name: state
+          in: query
+          required: false
+          description: Only runs in this state
+          schema: {$ref: "#/components/schemas/State"}
+        - name: mine
+          in: query
+          required: false
+          description: Only the caller's own runs
+          schema: {type: boolean}
+      responses:
+        "200":
+          description: The runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applications]
+                properties:
+                  applications:
+                    type: array
+                    items: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+    post:
+      tags: [applications]
+      operationId: submitApplication
+      summary: Submit an application
+      description: |
+        Admission is checked first: at most `runs.maxRunning` live runs install-wide (and
+        `runs.maxRunningPerWorkspace` per workspace), and every live run's largest footprint must
+        fit `runs.memoryBudget`; otherwise 429.
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            A caller-chosen key (at most 200 characters). Submitting again with the same key, by the
+            same caller in the same workspace, returns the first run (200) instead of starting another.
+          schema: {type: string, maxLength: 200}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ApplicationSpec"}
+      responses:
+        "201":
+          description: Submitted
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "200":
+          description: Already submitted with this Idempotency-Key
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+  /applications/{id}:
+    get:
+      tags: [applications]
+      operationId: getApplication
+      summary: One run
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /applications/{id}/stop:
+    post:
+      tags: [applications]
+      operationId: stopApplication
+      summary: Stop a run (its submitter, a workspace owner or a platform operator)
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "202":
+          description: Stop requested; the run becomes `stopped` and its namespace is deleted
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "200":
+          description: The run had already ended
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /applications/{id}/logs:
+    get:
+      tags: [applications]
+      operationId: getApplicationLogs
+      summary: The driver's log (its submitter, a workspace owner or a platform operator)
+      description: Live while the run is live; afterwards, the last 1 MiB kept when it ended.
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+        - name: tail
+          in: query
+          required: false
+          description: Lines from the end of a live log (default 500)
+          schema: {type: integer, minimum: 1, maximum: 10000}
+      responses:
+        "200":
+          description: The log
+          content:
+            text/plain:
+              schema: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Workspace:
+      name: X-Workspace
+      in: header
+      required: true
+      description: The active workspace's slug (booth-core forwards it as X-Booth-Workspace)
+      schema: {type: string}
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, pattern: "^r[a-z0-9]{11}$"}
+  responses:
+    Error:
+      description: An error
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string, description: "What went wrong, in words"}
+        code:
+          type: string
+          description: A stable machine-readable code
+          enum: [invalid, forbidden, not_found, unavailable, at_capacity, internal]
+    Me:
+      type: object
+      required: [subject, workspace, role, operator, workload, canSubmit, submitMinRole]
+      properties:
+        subject: {type: string}
+        displayName: {type: string}
+        workspace: {type: string}
+        role: {type: string, enum: [owner, editor, viewer]}
+        operator: {type: boolean}
+        workload: {type: boolean}
+        canSubmit: {type: boolean}
+        submitMinRole: {type: string, enum: [editor, owner]}
+    State:
+      type: string
+      enum: [pending, running, succeeded, failed, stopped]
+    ApplicationSpec:
+      type: object
+      additionalProperties: false
+      required: [name, main]
+      properties:
+        name:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$"
+        main:
+          type: object
+          additionalProperties: false
+          properties:
+            inlinePython:
+              type: string
+              maxLength: 262144
+              description: The application's Python source (PySpark), at most 256 KiB
+            python:
+              description: Not in this version (needs data access); refused with 422
+            jar:
+              description: Not in this version (needs data access); refused with 422
+        args:
+          type: array
+          maxItems: 64
+          items: {type: string, maxLength: 4096}
+        resources:
+          type: object
+          additionalProperties: false
+          properties:
+            driver:
+              type: object
+              additionalProperties: false
+              properties:
+                memory: {$ref: "#/components/schemas/Memory"}
+            executors:
+              type: object
+              additionalProperties: false
+              properties:
+                min: {type: integer, minimum: 0}
+                max: {type: integer, minimum: 0, description: "At most runs.maxExecutors"}
+                memory: {$ref: "#/components/schemas/Memory"}
+        conf:
+          type: object
+          description: |
+            Spark settings the caller may set: spark.sql.shuffle.partitions, spark.default.parallelism,
+            spark.sql.adaptive.enabled, spark.sql.session.timeZone, spark.sql.ansi.enabled,
+            spark.sql.execution.arrow.pyspark.enabled. Anything else is refused (400).
+          additionalProperties: {type: string, maxLength: 256}
+        dataAccess:
+          description: Not in this version; any non-empty value is refused with 422
+        maxDuration:
+          type: string
+          description: A Go duration (e.g. "30m"), at most runs.maxDuration, which is the default
+    Memory:
+      type: string
+      pattern: "^[1-9][0-9]{0,5}[mg]$"
+      description: A JVM heap in Spark's notation, between 512m and runs.maxMemory
+    Run:
+      type: object
+      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [application]}
+        workspace: {type: string}
+        submitter: {type: string, description: The submitter's subject}
+        submitterName: {type: string}
+        workload: {type: boolean, description: Submitted with a workload token}
+        name: {type: string}
+        state: {$ref: "#/components/schemas/State"}
+        reason: {type: string, description: "Why the run is in its state, once it has ended"}
+        stopRequested: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+        footprintMi: {type: integer, description: "The most memory the run's pods can use at once, MiB"}
+        resources:
+          type: object
+          required: [driverMemory, executorMemory, minExecutors, maxExecutors, maxDuration]
+          properties:
+            driverMemory: {type: string}
+            executorMemory: {type: string}
+            minExecutors: {type: integer}
+            maxExecutors: {type: integer}
+            maxDuration: {type: string}
+        uiPath:
+          type: string
+          description: While running, where the run's Spark UI opens in the shell (its submitter only)

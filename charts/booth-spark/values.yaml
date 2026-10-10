@@ -53,13 +53,79 @@ submit:
   # editors are not trusted.
   minRole: editor
 
-# TEST ONLY, empty in every real install: a fixed table of runs whose Spark UI the backend will
-# proxy, used by Integration to prove the Spark UI path through a real core (build step 2) before
-# the module can start drivers itself. Step 3 removes it in favour of the module's own run records.
-# Each entry: {id, workspace, submitter (the person's `sub`), url (the driver's UI)}. Only the
-# submitter may open a run's UI (ADR 0110 ruling 4).
-uiProof:
-  runs: []
+# Spark runs (docs/design-v0.md items 3, 7 and 8). Each run (a batch application) gets its own
+# namespace, bspark-<run>, holding one driver and 0 to runs.maxExecutors executors, fenced by two
+# admission policies (templates/admission.yaml) and default-deny NetworkPolicies. The namespace is
+# deleted when the run ends, and every run namespace is deleted when this chart is uninstalled.
+#
+# Known residual (ADR 0110 ruling 3, stated plainly): a run's driver runs the user's own code and
+# holds a Kubernetes account, so user code can call the Kubernetes API server directly. That
+# account may only manage pods and config maps in the run's own namespace, and the admission
+# policies limit what pods it can create; but the API server itself is reachable from user code,
+# so an API-server vulnerability would be within its reach.
+runs:
+  # The Spark image every driver and executor runs (the only image a run namespace admits).
+  # Spark 4.1.3, pinned by its multi-arch index digest (docs/design-v0.md item 1).
+  image: apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211
+  imagePullPolicy: IfNotPresent
+  # Admission (item 7): how many runs may be live at once, install-wide and per workspace (0: no
+  # per-workspace cap), and the memory all live runs may use together, each counted at its largest
+  # (driver plus every executor it may scale to). A default run needs about 2.6Gi, so 4Gi admits
+  # one full-size run, or two small ones, on a machine with a few GB free.
+  maxRunning: 2
+  maxRunningPerWorkspace: 1
+  memoryBudget: 4Gi
+  # Executors per run: at most maxExecutors, defaultExecutors when the caller doesn't say. Dynamic
+  # allocation scales between the caller's min and max and frees idle executors after 60s.
+  maxExecutors: 2
+  defaultExecutors: 2
+  # Largest heap a caller may ask for, driver or executor (each pod adds Spark's overhead:
+  # max(384Mi, 40%)).
+  maxMemory: 2g
+  # A run is stopped after this long, and fails if its driver hasn't started within pendingTimeout.
+  maxDuration: 6h
+  pendingTimeout: 10m
+  driver:
+    # Default heap (512m plus 384Mi overhead: an 896Mi pod).
+    memory: 512m
+    cpu: {request: 250m, limit: "1"}
+    # Placement of every run's driver (item 8; plain Kubernetes names). The run-pods admission
+    # policy requires every entry of nodeSelector on every driver, so a pod can't land elsewhere.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  executor:
+    memory: 512m
+    cpu: {request: 250m, limit: "1"}
+    # Placement of every run's executors, enforced the same way.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  egress:
+    # ADR 0110 (the user's choice): "open" lets a run's pods reach the internet, and only the
+    # internet: every range below stays unreachable, which covers the cluster's pod and Service
+    # ranges on k3s and kind, the LAN, and the cloud metadata address. "closed": DNS, the run's own
+    # pods and (for the driver) the API server only.
+    #
+    # Consequence of "open", stated plainly: anything a run's code can read it can send to any
+    # internet host. Today a run reads nothing but its own inputs; once data access arrives
+    # (step 5), that includes whatever its submitter's leases cover. Set "closed", or
+    # submit.minRole=owner, where editors aren't trusted.
+    mode: open
+    exceptCidrs:
+      - 0.0.0.0/8
+      - 10.0.0.0/8
+      - 100.64.0.0/10
+      - 127.0.0.0/8
+      - 169.254.0.0/16
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 224.0.0.0/4
+      - 240.0.0.0/4
+    # The cluster's DNS, which every run pod may reach (k3s and kind both label CoreDNS this way).
+    dns:
+      namespaceSelector: {kubernetes.io/metadata.name: kube-system}
+      podSelector: {k8s-app: kube-dns}
 
 # Run records live in this module's own database on the shared PostgreSQL cluster (ADR 0014).
 #
@@ -103,7 +169,7 @@ resources:
 
 # Placement of the backend (the controller), with plain Kubernetes names as booth-database and
 # booth-logging use (docs/design-v0.md item 8; allowed for Spark alone, ADR 0110). Drivers and
-# executors get their own `runs.driver.*` / `runs.executor.*` blocks when runs exist (step 3).
+# executors have their own, in runs.driver and runs.executor.
 nodeSelector: {}
 tolerations: []
 affinity: {}

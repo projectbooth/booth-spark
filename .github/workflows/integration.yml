@@ -17,8 +17,11 @@ permissions:
   contents: read
 
 # kind and its node image are pinned (docs/design-v0.md item 9): kind v0.33.0's own release notes
-# list this digest for Kubernetes 1.35.8. kind's default CNI (kindnet) enforces NetworkPolicy, which
-# the run-isolation tests in later steps rely on, as booth-pipeline's Integration does.
+# list this digest for Kubernetes 1.35.8, which serves ValidatingAdmissionPolicy (GA in 1.30; the
+# chart refuses a cluster that doesn't, and verify.sh checks it is served). kind's default CNI
+# (kindnet) enforces NetworkPolicy ingress but NOT egress (measured, step 3), so the real-core job,
+# whose isolation and egress checks depend on egress rules, runs kind without it and installs
+# Calico (test/integration/cni/).
 env:
   KIND_VERSION: v0.33.0
   KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
@@ -76,7 +79,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       CORE_REF: f631bd2cde1991492676649945dac226a7410f90
-      # The Spark runtime base (docs/design-v0.md item 1), for step 2's proof driver: the pinned
+      # The Spark runtime image of every run (docs/design-v0.md item 1, runs.image): the pinned
       # multi-arch index, and its linux/amd64 manifest, which is what gets pulled and loaded. `kind
       # load` can't import a multi-arch index whose other platforms aren't present locally ("content
       # digest ... not found"), so the job loads the single-platform manifest and first checks that it
@@ -104,6 +107,10 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           node_image: ${{ env.KIND_NODE_IMAGE }}
           cluster_name: booth-spark-realcore
+          config: test/integration/cni/kind-calico.yaml
+
+      - name: Calico (pinned manifest and image digests), for NetworkPolicy egress enforcement
+        run: test/integration/cni/calico.sh
 
       - uses: azure/setup-helm@v4
 
@@ -122,11 +129,12 @@ jobs:
             | grep -qx "${SPARK_IMAGE_AMD64#*@} amd64" \
             || { echo "$SPARK_IMAGE_AMD64 is not the linux/amd64 entry of $SPARK_INDEX"; exit 1; }
           docker pull "$SPARK_IMAGE_AMD64"
-          docker tag "$SPARK_IMAGE_AMD64" booth-spark-proof-spark:ci
-          kind load docker-image booth-core:ci booth-spark:ci booth-spark-proof-spark:ci --name booth-spark-realcore
+          docker tag "$SPARK_IMAGE_AMD64" booth-spark-runtime:ci
+          kind load docker-image booth-core:ci booth-spark:ci booth-spark-runtime:ci --name booth-spark-realcore
 
-      - name: Deploy Keycloak, booth-core, the Spark proof driver and booth-spark
-        run: test/integration/deploy-realcore.sh booth-core booth-core:ci booth-spark:ci booth-spark-proof-spark:ci
+      - name: Deploy Keycloak, booth-core and booth-spark (runs on the pinned Spark image)
+        id: deploy
+        run: test/integration/deploy-realcore.sh booth-core booth-core:ci booth-spark:ci booth-spark-runtime:ci
 
       - name: Verify (including the REAL_CORE checks)
         env:
@@ -145,8 +153,27 @@ jobs:
       - name: Install Chromium for the browser checks
         run: cd test/integration/browser && npm ci && npx playwright install --with-deps chromium
 
-      - name: "The Spark UI path (docs/design-v0.md item 5): a real driver's UI through core, submitter only, actions refused, Chromium"
+      # The step 3 checks below each run even when an earlier one failed (the job still fails), so
+      # one run reports on all of them; uninstall.sh runs last because it removes booth-spark.
+      - name: "Runs (docs/design-v0.md items 3, 6, 7): an application with real executors in its own namespace, roles, failure, stop, admission"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: test/integration/runs.sh
+
+      - name: "Isolation (item 3): run A against run B, the run-pods policy, the driver UI port, the backend's fence, the executor account"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: test/integration/isolation.sh
+
+      - name: "The Spark UI path (item 5): a real run's UI through core, submitter only, allowlist, Chromium"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/ui-path.sh
+
+      - name: "Egress (ADR 0110): open is the internet only; closed is not even that"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: test/integration/egress.sh booth-spark:ci booth-spark-runtime:ci
+
+      - name: "Uninstall (ADR 0110 ruling 2): helm uninstall, and booth-core's module uninstall, leave nothing behind"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: test/integration/uninstall.sh booth-spark:ci booth-spark-runtime:ci
 
       - name: Dump state on failure
         if: failure()
@@ -158,6 +185,11 @@ jobs:
           kubectl -n booth-spark describe pods | tail -60
           kubectl -n booth-spark logs deployment/booth-spark --tail=200 || true
           kubectl -n keycloak logs deploy/keycloak --tail=60 || true
-          kubectl -n booth-spark-proof describe pod proof-driver | tail -30 || true
-          kubectl -n booth-spark-proof logs proof-driver --tail=80 || true
-          cat /tmp/booth-spark-core-pf.log || true
+          kubectl get namespaces -l booth.projectbooth.io/spark-run --show-labels || true
+          for n in $(kubectl get namespaces -l booth.projectbooth.io/spark-run -o name | cut -d/ -f2); do
+            kubectl -n "$n" get pods,networkpolicies,resourcequotas -o wide || true
+            kubectl -n "$n" describe pod driver | tail -30 || true
+            kubectl -n "$n" logs driver --tail=80 || true
+            kubectl -n "$n" get events --sort-by=.lastTimestamp | tail -20 || true
+          done
+          kubectl get validatingadmissionpolicies,validatingadmissionpolicybindings || true

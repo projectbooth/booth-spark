@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func TestSparkUI(t *testing.T) {
 		// The submitter acting in another workspace: the run is not theirs to see from there.
 		"submitter-elsewhere": {Subject: "e-1", Workspace: "globex", Role: identity.RoleOwner},
 	}
-	h := NewRouter(Deps{DB: fakeDB{}, Iframe: callers, SubmitMinRole: auth.RoleEditor, Runs: StaticRuns{
+	h := NewRouter(Deps{DB: fakeDB{}, Iframe: callers, SubmitMinRole: auth.RoleEditor, Runs: staticRuns{
 		"r-1": {ID: "r-1", Workspace: "acme", Submitter: "e-1", UIURL: drv.URL},
 	}})
 
@@ -88,4 +89,12 @@ func TestSparkUI_NoRuns(t *testing.T) {
 	if rec := do(h, "GET", "/runs/r-1/ui/jobs/", identity.HeaderIdentity, "x"); rec.Code != 404 {
 		t.Errorf("status %d", rec.Code)
 	}
+}
+
+// staticRuns is a fixed run table for the proxy tests.
+type staticRuns map[string]uiproxy.Run
+
+func (s staticRuns) Lookup(_ context.Context, id string) (uiproxy.Run, bool) {
+	run, ok := s[id]
+	return run, ok
 }

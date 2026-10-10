@@ -119,26 +119,6 @@ func TestRewriteLocation(t *testing.T) {
 	}
 }
 
-func TestBlocked(t *testing.T) {
-	for path, want := range map[string]bool{
-		"/jobs/":                    false,
-		"/jobs/job/kill/":           true,
-		"/stages/stage/kill/":       true,
-		"/STAGES/STAGE/KILL/":       true,
-		"/executors/threadDump/":    true,
-		"/executors/heapHistogram/": true,
-		"/api/v1/applications/local-1/executors/driver/threads": true,
-		"/api/v1/applications/local-1/allexecutors":             false,
-		"/environment/":    false,
-		"/static/webui.js": false,
-		"/jobs/killer/":    false,
-	} {
-		if got := Blocked(path); got != want {
-			t.Errorf("Blocked(%q) = %v, want %v", path, got, want)
-		}
-	}
-}
-
 func TestBadPath(t *testing.T) {
 	for path, want := range map[string]bool{
 		"/runs/r-1/ui/jobs/":       false,

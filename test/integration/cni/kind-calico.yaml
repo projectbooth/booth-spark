@@ -1,0 +1,10 @@
+# kind with its default CNI off, for Calico (cni/calico.sh). kindnet enforces NetworkPolicy ingress
+# but not egress (measured on kind v0.33.0 / kindnetd v20260820: a default-deny egress policy left
+# the API server, the internet and another namespace's pod and Service reachable), and the run
+# namespaces' egress rules are a security boundary (ADR 0110), so the real-core job needs a CNI that
+# enforces them. 192.168.0.0/16 is Calico's default pool.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: 192.168.0.0/16

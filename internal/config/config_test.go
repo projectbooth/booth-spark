@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const iframeIssuer = "http://booth-core.booth-system.svc.cluster.local:8080/iframe-identity"
 
@@ -89,29 +92,52 @@ func TestLoad_WorkloadIssuer(t *testing.T) {
 	}
 }
 
-func TestLoad_UIProofRuns(t *testing.T) {
+const runsOK = `{"image":"spark@sha256:x","imagePullPolicy":"IfNotPresent","maxRunning":2,"maxRunningPerWorkspace":1,
+"memoryBudget":"4Gi","maxExecutors":2,"defaultExecutors":2,"maxMemory":"2g","maxDuration":"6h","pendingTimeout":"10m",
+"driver":{"memory":"512m","cpu":{"request":"250m","limit":"1"}},"executor":{"memory":"512m","cpu":{"request":"250m","limit":"1"}},
+"egress":{"mode":"open","exceptCidrs":["10.0.0.0/8"],"dns":{"namespaceSelector":{"a":"b"},"podSelector":{"c":"d"}}}}`
+
+func runsEnv(t *testing.T) {
+	t.Helper()
 	base(t)
-	if cfg, err := Load(); err != nil || len(cfg.UIProofRuns) != 0 {
-		t.Fatalf("default: %+v %v", cfg.UIProofRuns, err)
+	t.Setenv("BOOTH_INSTANCE", "ns.booth-spark")
+	t.Setenv("BOOTH_NAMESPACE", "ns")
+	t.Setenv("BOOTH_SERVICE_ACCOUNT", "booth-spark")
+	t.Setenv("BOOTH_DRIVER_CLUSTERROLE", "booth-spark-driver")
+	t.Setenv("BOOTH_RUN_CONTROLLER_CLUSTERROLE", "booth-spark-run-controller")
+	t.Setenv("BOOTH_BACKEND_POD_LABELS", `{"app":"booth-spark"}`)
+}
+
+func TestLoad_Runs(t *testing.T) {
+	runsEnv(t)
+	if cfg, err := Load(); err != nil || cfg.Runs != nil {
+		t.Fatalf("unset: %+v %v", cfg.Runs, err)
 	}
-	t.Setenv("BOOTH_UI_PROOF_RUNS", `[{"id":"proof-1","workspace":"acme","submitter":"u-1","url":"http://proof-driver.p.svc:4040"}]`)
+	t.Setenv("BOOTH_RUNS", runsOK)
 	cfg, err := Load()
-	if err != nil || len(cfg.UIProofRuns) != 1 || cfg.UIProofRuns[0].Submitter != "u-1" {
-		t.Fatalf("set: %+v %v", cfg.UIProofRuns, err)
+	if err != nil || cfg.Runs.MemoryBudgetMi != 4096 || cfg.Runs.PendingTimeoutD.String() != "10m0s" {
+		t.Fatalf("ok: %+v %v", cfg.Runs, err)
 	}
-	for name, v := range map[string]string{
-		"not JSON":        `nope`,
-		"unknown field":   `[{"id":"a","workspace":"w","submitter":"s","url":"http://x","owner":"o"}]`,
-		"bad id":          `[{"id":"Proof","workspace":"w","submitter":"s","url":"http://x"}]`,
-		"reserved id":     `[{"id":"proxy","workspace":"w","submitter":"s","url":"http://x"}]`,
-		"duplicate":       `[{"id":"a","workspace":"w","submitter":"s","url":"http://x"},{"id":"a","workspace":"w","submitter":"s","url":"http://x"}]`,
-		"no submitter":    `[{"id":"a","workspace":"w","url":"http://x"}]`,
-		"not an http url": `[{"id":"a","workspace":"w","submitter":"s","url":"file:///etc"}]`,
+	for name, mut := range map[string]func(string) string{
+		"unknown field":   func(s string) string { return strings.Replace(s, `"maxRunning":2`, `"maxRunning":2,"maxRuning":3`, 1) },
+		"no image":        func(s string) string { return strings.Replace(s, `"spark@sha256:x"`, `""`, 1) },
+		"bad pull policy": func(s string) string { return strings.Replace(s, `"IfNotPresent"`, `"Sometimes"`, 1) },
+		"bad budget":      func(s string) string { return strings.Replace(s, `"4Gi"`, `"lots"`, 1) },
+		"bad egress mode": func(s string) string { return strings.Replace(s, `"mode":"open"`, `"mode":"internet"`, 1) },
+		"bad cidr":        func(s string) string { return strings.Replace(s, `"10.0.0.0/8"`, `"10.0.0.0/33"`, 1) },
+		"no dns":          func(s string) string { return strings.Replace(s, `"podSelector":{"c":"d"}`, `"podSelector":{}`, 1) },
+		"bad memory":      func(s string) string { return strings.Replace(s, `"maxMemory":"2g"`, `"maxMemory":"2Gi"`, 1) },
+		"defaults > max":  func(s string) string { return strings.Replace(s, `"defaultExecutors":2`, `"defaultExecutors":3`, 1) },
 	} {
-		t.Setenv("BOOTH_UI_PROOF_RUNS", v)
+		t.Setenv("BOOTH_RUNS", mut(runsOK))
 		if _, err := Load(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	t.Setenv("BOOTH_RUNS", runsOK)
+	t.Setenv("BOOTH_BACKEND_POD_LABELS", `{}`)
+	if _, err := Load(); err == nil {
+		t.Error("no backend pod labels: accepted")
 	}
 }
 

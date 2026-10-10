@@ -40,3 +40,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The value of the booth.projectbooth.io/spark-run label on this install's run namespaces, which
+both admission policies key on: "<release namespace>.<fullname>", at most 63 characters.
+*/}}
+{{- define "booth-spark.instance" -}}
+{{- printf "%s.%s" .Release.Namespace (include "booth-spark.fullname" .) | trunc 63 | trimSuffix "-" | trimSuffix "." -}}
+{{- end -}}

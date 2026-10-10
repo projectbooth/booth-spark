@@ -6,13 +6,16 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
+	"net"
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/projectbooth/booth-spark/internal/auth"
-	"github.com/projectbooth/booth-spark/internal/uiproxy"
+	"github.com/projectbooth/booth-spark/internal/runs"
 )
 
 // Config is booth-spark's full runtime configuration.
@@ -39,12 +42,47 @@ type Config struct {
 	// submit.
 	SubmitMinRole auth.Role
 
-	// UIProofRuns is step 2's fixed run table (BOOTH_UI_PROOF_RUNS, JSON): runs whose Spark UI the
-	// proxy may open, with their workspace, submitter and driver UI URL. It exists only to prove the
-	// Spark UI path through a real core before the module can start drivers itself (step 3, which
-	// replaces it with the module's run records). Empty in every real install; chart value
-	// uiProof.runs.
-	UIProofRuns []uiproxy.Run
+	// Runs is the chart's `runs` values plus the install's identity (BOOTH_RUNS and the
+	// BOOTH_INSTANCE etc. variables the chart sets). Nil when BOOTH_RUNS is unset: the module then
+	// serves identity and health but no runs (the Go tests' configuration, never a chart install).
+	Runs *Runs
+}
+
+// Runs configures the run controller (docs/design-v0.md items 3, 7 and 8).
+type Runs struct {
+	Image                  string      `json:"image"`
+	ImagePullPolicy        string      `json:"imagePullPolicy"`
+	MaxRunning             int         `json:"maxRunning"`
+	MaxRunningPerWorkspace int         `json:"maxRunningPerWorkspace"`
+	MemoryBudget           string      `json:"memoryBudget"`
+	MaxExecutors           int         `json:"maxExecutors"`
+	DefaultExecutors       int         `json:"defaultExecutors"`
+	MaxMemory              string      `json:"maxMemory"`
+	MaxDuration            string      `json:"maxDuration"`
+	PendingTimeout         string      `json:"pendingTimeout"`
+	Driver                 PodKind     `json:"driver"`
+	Executor               PodKind     `json:"executor"`
+	Egress                 runs.Egress `json:"egress"`
+
+	// Set from the chart's own names, not from runs values.
+	Instance                 string            `json:"-"`
+	Namespace                string            `json:"-"`
+	ServiceAccount           string            `json:"-"`
+	BackendPodLabels         map[string]string `json:"-"`
+	DriverClusterRole        string            `json:"-"`
+	RunControllerClusterRole string            `json:"-"`
+
+	// Parsed.
+	MemoryBudgetMi  int           `json:"-"`
+	MaxDurationD    time.Duration `json:"-"`
+	PendingTimeoutD time.Duration `json:"-"`
+}
+
+// PodKind is a driver's or an executor's defaults and placement.
+type PodKind struct {
+	Memory string   `json:"memory"`
+	CPU    runs.CPU `json:"cpu"`
+	runs.Placement
 }
 
 // Load reads configuration from the environment.
@@ -88,27 +126,12 @@ func Load() (Config, error) {
 	if cfg.SubmitMinRole != auth.RoleEditor && cfg.SubmitMinRole != auth.RoleOwner {
 		return Config{}, fmt.Errorf("BOOTH_SUBMIT_MIN_ROLE must be editor or owner (viewers never submit, ADR 0110), not %q", cfg.SubmitMinRole)
 	}
-	if v := os.Getenv("BOOTH_UI_PROOF_RUNS"); v != "" {
-		dec := json.NewDecoder(strings.NewReader(v))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg.UIProofRuns); err != nil {
-			return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: %w", err)
+	if v := os.Getenv("BOOTH_RUNS"); v != "" {
+		r, err := loadRuns(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("BOOTH_RUNS: %w", err)
 		}
-		seen := map[string]bool{}
-		for _, r := range cfg.UIProofRuns {
-			u, err := url.Parse(r.UIURL)
-			switch {
-			case !uiproxy.ValidID(r.ID):
-				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: %q is not a valid run id", r.ID)
-			case seen[r.ID]:
-				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: run %q listed twice", r.ID)
-			case r.Workspace == "" || r.Submitter == "":
-				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: run %q needs a workspace and a submitter", r.ID)
-			case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
-				return Config{}, fmt.Errorf("BOOTH_UI_PROOF_RUNS: run %q has no http(s) url", r.ID)
-			}
-			seen[r.ID] = true
-		}
+		cfg.Runs = r
 	}
 	return cfg, nil
 }
@@ -118,4 +141,77 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func loadRuns(raw string) (*Runs, error) {
+	var r Runs
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		return nil, err
+	}
+	r.Instance = os.Getenv("BOOTH_INSTANCE")
+	r.Namespace = os.Getenv("BOOTH_NAMESPACE")
+	r.ServiceAccount = os.Getenv("BOOTH_SERVICE_ACCOUNT")
+	r.DriverClusterRole = os.Getenv("BOOTH_DRIVER_CLUSTERROLE")
+	r.RunControllerClusterRole = os.Getenv("BOOTH_RUN_CONTROLLER_CLUSTERROLE")
+	if err := json.Unmarshal([]byte(getEnv("BOOTH_BACKEND_POD_LABELS", "{}")), &r.BackendPodLabels); err != nil {
+		return nil, fmt.Errorf("BOOTH_BACKEND_POD_LABELS: %w", err)
+	}
+	for name, v := range map[string]string{
+		"BOOTH_INSTANCE": r.Instance, "BOOTH_NAMESPACE": r.Namespace, "BOOTH_SERVICE_ACCOUNT": r.ServiceAccount,
+		"BOOTH_DRIVER_CLUSTERROLE": r.DriverClusterRole, "BOOTH_RUN_CONTROLLER_CLUSTERROLE": r.RunControllerClusterRole,
+		"runs.image": r.Image,
+	} {
+		if v == "" {
+			return nil, fmt.Errorf("%s is required", name)
+		}
+	}
+	if len(r.BackendPodLabels) == 0 {
+		return nil, fmt.Errorf("BOOTH_BACKEND_POD_LABELS is required: the run namespaces admit the driver UI only from these pods")
+	}
+	switch r.ImagePullPolicy {
+	case "Always", "IfNotPresent", "Never":
+	default:
+		return nil, fmt.Errorf("runs.imagePullPolicy %q", r.ImagePullPolicy)
+	}
+	if r.MaxRunning < 1 || r.MaxRunningPerWorkspace < 0 || r.MaxExecutors < 0 || r.DefaultExecutors < 0 || r.DefaultExecutors > r.MaxExecutors {
+		return nil, fmt.Errorf("runs: need maxRunning >= 1, maxRunningPerWorkspace >= 0 and 0 <= defaultExecutors <= maxExecutors")
+	}
+	q, err := resource.ParseQuantity(r.MemoryBudget)
+	if err != nil {
+		return nil, fmt.Errorf("runs.memoryBudget: %w", err)
+	}
+	r.MemoryBudgetMi = int(q.Value() >> 20)
+	if r.MaxDurationD, err = time.ParseDuration(r.MaxDuration); err != nil || r.MaxDurationD <= 0 {
+		return nil, fmt.Errorf("runs.maxDuration %q", r.MaxDuration)
+	}
+	if r.PendingTimeoutD, err = time.ParseDuration(r.PendingTimeout); err != nil || r.PendingTimeoutD <= 0 {
+		return nil, fmt.Errorf("runs.pendingTimeout %q", r.PendingTimeout)
+	}
+	for name, m := range map[string]string{"runs.maxMemory": r.MaxMemory, "runs.driver.memory": r.Driver.Memory, "runs.executor.memory": r.Executor.Memory} {
+		if _, err := runs.HeapMi(m); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	for name, c := range map[string]runs.CPU{"runs.driver.cpu": r.Driver.CPU, "runs.executor.cpu": r.Executor.CPU} {
+		if _, err := resource.ParseQuantity(c.Request); err != nil {
+			return nil, fmt.Errorf("%s.request: %w", name, err)
+		}
+		if _, err := resource.ParseQuantity(c.Limit); err != nil {
+			return nil, fmt.Errorf("%s.limit: %w", name, err)
+		}
+	}
+	if r.Egress.Mode != "open" && r.Egress.Mode != "closed" {
+		return nil, fmt.Errorf("runs.egress.mode must be open or closed, not %q", r.Egress.Mode)
+	}
+	for _, c := range r.Egress.ExceptCIDRs {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			return nil, fmt.Errorf("runs.egress.exceptCidrs: %q: %w", c, err)
+		}
+	}
+	if len(r.Egress.DNS.PodSelector) == 0 || len(r.Egress.DNS.NamespaceSelector) == 0 {
+		return nil, fmt.Errorf("runs.egress.dns needs a namespaceSelector and a podSelector")
+	}
+	return &r, nil
 }
