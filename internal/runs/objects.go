@@ -321,6 +321,16 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		"spark.local.dir": localDir,
 		"spark.jars.ivy":  "/tmp/.ivy2",
 	}
+	if v.MaxExecutors == 0 {
+		// Driver only. Spark refuses dynamic allocation with maxExecutors=0 ("cannot be 0!",
+		// found by Integration on a session), so it is off and no executor is ever requested.
+		for _, k := range []string{"spark.dynamicAllocation.minExecutors", "spark.dynamicAllocation.initialExecutors",
+			"spark.dynamicAllocation.maxExecutors", "spark.dynamicAllocation.shuffleTracking.enabled", "spark.dynamicAllocation.executorIdleTimeout"} {
+			delete(conf, k)
+		}
+		conf["spark.dynamicAllocation.enabled"] = "false"
+		conf["spark.executor.instances"] = "0"
+	}
 	for k, val := range sparkconf.UIConf() {
 		conf[k] = val
 	}

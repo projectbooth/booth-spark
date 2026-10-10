@@ -162,6 +162,25 @@ func TestBuild_DriverPod(t *testing.T) {
 	}
 }
 
+// Driver only: Spark refuses dynamic allocation with maxExecutors=0, so it is turned off.
+func TestDriverArgs_NoExecutors(t *testing.T) {
+	r := testRun(t)
+	r.Spec.MinExecutors, r.Spec.MaxExecutors = 0, 0
+	args := strings.Join(DriverArgs(r, testCluster(), APIEndpoint{IP: "1.2.3.4", Port: 6443}), " ")
+	for _, want := range []string{"spark.dynamicAllocation.enabled=false", "spark.executor.instances=0"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args lack %s", want)
+		}
+	}
+	if strings.Contains(args, "maxExecutors=0") {
+		t.Error("maxExecutors=0 is passed to Spark, which refuses it")
+	}
+	r.Spec.MaxExecutors = 2
+	if args := strings.Join(DriverArgs(r, testCluster(), APIEndpoint{IP: "1.2.3.4", Port: 6443}), " "); !strings.Contains(args, "spark.dynamicAllocation.enabled=true") {
+		t.Error("dynamic allocation is off with executors allowed")
+	}
+}
+
 // A caller's conf can never override what makes the run isolated.
 func TestDriverArgs_CallerConfCannotOverride(t *testing.T) {
 	r := testRun(t)
