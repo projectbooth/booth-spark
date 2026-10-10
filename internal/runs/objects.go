@@ -28,6 +28,10 @@ const (
 
 	NamespacePrefix = "bspark-"
 
+	// DatabaseClientLabel is booth-database's (and booth-core's) label for a namespace whose pods
+	// connect to the workspace database.
+	DatabaseClientLabel = "booth.projectbooth.io/database-client"
+
 	// Names inside a run's namespace.
 	DriverAccount     = "driver"
 	ExecutorAccount   = "executor"
@@ -163,6 +167,11 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 			Name: c.DriverClusterRole, UID: c.DriverClusterRoleUID,
 		}},
 	}}
+	if r.Data != nil && r.Data.Database != "" {
+		// booth-database's Postgres admits only namespaces carrying this label (its ingress policy,
+		// beneath credential auth); core sets it on module namespaces, and a run's is the module's own.
+		o.Namespace.Labels[DatabaseClientLabel] = "true"
+	}
 	o.ControllerBinding = &rbacv1.RoleBinding{
 		ObjectMeta: meta(ControllerBinding),
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: c.RunControllerClusterRole},

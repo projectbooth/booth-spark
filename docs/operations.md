@@ -38,3 +38,33 @@ about every 30 seconds, so content can outlive the retention by that much.
 
 Until then, the content is in the module's own database, and it can hold workspace data: what a
 query returned, or what a run printed.
+
+## Data access
+
+Off by default (`dataAccess.enabled`). With it on, a run reads and writes data as its submitter,
+capped at editor: the workspace's booth-database schema, its booth-lakehouse warehouse (the Iceberg
+catalog `lakehouse`), and up to 4 booth-storage locations it names. Turning it on needs:
+
+- `runs.image` set to booth-spark's runtime image (`images/spark-runtime`). The chart refuses plain
+  `apache/spark`, which has no JDBC driver, Iceberg or S3A;
+- the data paths you have installed: `dataAccess.database.enabled`, `dataAccess.lakehouse.enabled`,
+  `dataAccess.storage.enabled`. `dataAccess.database.egress` must match your booth-database
+  install's namespace and Postgres labels; for an in-cluster object store (MinIO), set
+  `dataAccess.objectStore.egress`, while AWS S3 is reached through `runs.egress.mode=open`;
+- a CNI that enforces NetworkPolicy. The backend's internal port (8081), which hands out run tokens
+  against each run's bearer, is opened to this install's run namespaces only.
+
+Known limits, stated plainly:
+
+- **A run ends when its submitter loses their editor role or their access.** Its namespace is
+  deleted at once, which ends every connection in it. S3 keys its code copied stay valid until
+  their lease expires (at least 15 minutes on MinIO).
+- **A run's code can read its own token and S3 keys.** Everything its submitter's leases cover, it
+  can read and, as an editor's run, write: the whole workspace schema and warehouse. With open
+  egress it can also send that anywhere on the internet (ADR 0110, "Open egress"). Where editors
+  aren't trusted, set `runs.egress.mode=closed` or `submit.minRole=owner`.
+- **One storage location per bucket.** A run naming two locations in one bucket is refused at
+  launch; name their common parent instead. The warehouse and one storage location may share a
+  bucket.
+- **Runs submitted with a workload token** (a pipeline task) get no data access in this version
+  (ADR 0110 ruling 5).

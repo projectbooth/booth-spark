@@ -190,6 +190,18 @@ func TestPlanner_Prepare(t *testing.T) {
 	if err := p.Check(ctx, dataRun("u-gone", "acme", all)); !errors.Is(err, runs.ErrDataRefused) {
 		t.Errorf("Check after the submitter lost access: %v", err)
 	}
+	// A run that started as an editor's ends once its submitter is a viewer; one that started as a
+	// viewer's goes on.
+	demoted := dataRun("u-viewer", "acme", all)
+	demoted.Data = &runs.DataPlan{Role: "editor"}
+	p.Tokens.Forget("r1")
+	if err := p.Check(ctx, demoted); !errors.Is(err, runs.ErrDataRefused) || !strings.Contains(err.Error(), "now a viewer") {
+		t.Errorf("Check after a demotion: %v", err)
+	}
+	demoted.Data.Role = "viewer"
+	if err := p.Check(ctx, demoted); err != nil {
+		t.Errorf("Check for a viewer's run: %v", err)
+	}
 }
 
 type fakeStore struct{ runs map[string]runs.Run }

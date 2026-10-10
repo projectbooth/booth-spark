@@ -83,13 +83,20 @@ func (p *Planner) Prepare(ctx context.Context, r runs.Run) (runs.DataPlan, error
 	return plan, nil
 }
 
-// Check implements runs.Data.
+// Check implements runs.Data. A run that started as an editor's ends when its submitter is no longer
+// one: its sidecars hold read-write leases, which a viewer must not keep using until they expire.
 func (p *Planner) Check(ctx context.Context, r runs.Run) error {
-	_, err := p.Tokens.Get(ctx, runOf(r))
+	tok, err := p.Tokens.Get(ctx, runOf(r))
 	if Refused(err) {
 		return runs.DataRefusal("%v", err)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if r.Data != nil && r.Data.Role == "editor" && tok.Role != "editor" {
+		return runs.DataRefusal("the run's submitter is now a %s in this workspace, and the run started with an editor's read and write access", tok.Role)
+	}
+	return nil
 }
 
 // Forget implements runs.Data.

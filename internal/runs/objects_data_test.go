@@ -73,6 +73,12 @@ func TestBuild_DataPods(t *testing.T) {
 	if o.DataSecret == nil || o.DataSecret.StringData[dataBearerKey] != r.DataBearer {
 		t.Fatalf("data secret = %+v", o.DataSecret)
 	}
+	if o.Namespace.Labels[DatabaseClientLabel] != "true" {
+		t.Errorf("a run with database access lacks booth-database's client label: %v", o.Namespace.Labels)
+	}
+	if plain := build(t, testCluster()); plain.Namespace.Labels[DatabaseClientLabel] != "" {
+		t.Error("a run without database access has booth-database's client label")
+	}
 	d := o.DriverPod.Spec
 	if got := strings.Join(names(d.InitContainers), ","); got != "agent,pg-sidecar,s3-warehouse,s3-storage-0,start-gate" {
 		t.Errorf("driver init containers = %s", got)
