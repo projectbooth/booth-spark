@@ -10,6 +10,7 @@ import json
 import socket
 import ssl
 import sys
+import threading
 import urllib.error
 import urllib.request
 
@@ -35,11 +36,28 @@ def api(method, path, body=None):
 
 
 def tcp(host, port, timeout=4):
+    """open, or closed:<why>. A NetworkPolicy drops packets, so a blocked destination is
+    closed:TimeoutError; closed:ConnectionRefusedError means the path is open and nothing listens,
+    which is why every target the checks expect to be blocked has something listening on it."""
     try:
         socket.create_connection((host, port), timeout=timeout).close()
         return "open"
     except Exception as e:  # noqa: BLE001
         return "closed:" + type(e).__name__
+
+
+def listen(port):
+    """Accept and drop connections on port, in the background: the target of the driver-port checks."""
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(16)
+
+    def loop():
+        while True:
+            conn, _ = srv.accept()
+            conn.close()
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def pod(name, image, sa="executor", automount=False, workspace=None, node_selector=True, ns=None):
@@ -65,6 +83,16 @@ def pod(name, image, sa="executor", automount=False, workspace=None, node_select
     return code, text
 
 
+if mode == "listen":
+    # Run B: listens on its driver's RPC and UI ports, so a reachable port shows "open" and only a
+    # policy drop shows a timeout.
+    import time
+    listen(7078)
+    listen(4040)
+    print("LISTENING", flush=True)
+    time.sleep(900)
+    sys.exit(0)
+listen(7078)
 if mode == "isolation":
     other = args["otherNamespace"]
     results["control: list pods in its own namespace"] = api("GET", "/api/v1/namespaces/%s/pods" % own)[0]

@@ -40,7 +40,7 @@ controls() {
   expect "control: the Kubernetes API answers the driver" "$(pr 'control: the Kubernetes API')" '^200$'
   expect "control: the run's own driver port" "$(pr 'control: its own driver port')" '^open$'
   for t in "another namespace's pod (keycloak)" "a Service ClusterIP (booth-core)" "the pod CIDR (booth-core pod)" "the node's kubelet"; do
-    expect "not reachable: $t" "$(pr "$t")" '^closed'
+    expect "not reachable: $t (dropped)" "$(pr "$t")" '^closed:TimeoutError$'
   done
 }
 
@@ -55,8 +55,8 @@ bash "$here/install-spark.sh" "$image" "$spark_image" --set runs.egress.mode=clo
 kubectl -n booth-spark rollout status deploy/booth-spark --timeout=300s >/dev/null
 r=$(probe_run); echo "$r"
 controls
-expect "not reachable: the internet" "$(pr 'the internet (1.1.1.1:443)')" '^closed'
-expect "not reachable: the internet by name" "$(pr 'the internet by name (example.com:443)')" '^closed'
+expect "not reachable: the internet (dropped)" "$(pr 'the internet (1.1.1.1:443)')" '^closed:TimeoutError$'
+expect "not reachable: the internet by name (dropped)" "$(pr 'the internet by name (example.com:443)')" '^closed:TimeoutError$'
 
 step "back to the default"
 bash "$here/install-spark.sh" "$image" "$spark_image" >/dev/null

@@ -24,9 +24,10 @@ expect() { # DESCRIPTION ACTUAL PATTERN
 }
 
 step "run B (owner-user) runs; run A (editor-user) probes it from inside its own driver"
-b=$(submit "$T_owner" target "import time; time.sleep(900)" '{"resources":{"executors":{"max":0}}}')
+b=$(submit "$T_owner" target "$(cat "$here/fixtures/probe.py")" '{"args":["listen","{}"],"resources":{"executors":{"max":0}}}')
 wait_state "$T_owner" "$b" running >/dev/null
-kubectl -n "bspark-$b" wait --for=condition=Ready pod/driver --timeout=180s >/dev/null
+for _ in $(seq 1 120); do logs "$T_owner" "$b" | grep -q LISTENING && break; sleep 1; done
+logs "$T_owner" "$b" | grep -q LISTENING || fail "run B never listened on its driver ports"
 args=$(python3 -c "import json,sys; print(json.dumps({'otherNamespace': 'bspark-' + sys.argv[1], 'image': sys.argv[2], 'otherImage': 'busybox:1.36', 'workspace': 'acme-analytics', 'nodeSelector': {'booth.projectbooth.io/pool': 'compute'}}))" "$b" "$image")
 extra=$(python3 -c "import json,sys; print(json.dumps({'args': ['isolation', sys.argv[1]], 'resources': {'executors': {'max': 2}}}))" "$args")
 a=$(submit "$T_editor" probe "$(cat "$here/fixtures/probe.py")" "$extra")
@@ -41,8 +42,8 @@ expect "run A can't read run B's namespace" "$(pr "read run B's namespace")" '^4
 expect "run A can't read Secrets even in its own namespace" "$(pr 'read Secrets in its own namespace')" '^403$'
 expect "run A can't create a pod in run B's namespace" "$(pr "create a pod in run B's namespace")" '^403$'
 expect "control: run A reaches its own driver port" "$(pr 'control: its own driver port through its Service')" '^open$'
-expect "run A can't reach run B's driver RPC port" "$(pr "run B's driver RPC port")" '^closed'
-expect "run A can't reach run B's driver UI port" "$(pr "run B's driver UI port")" '^closed'
+expect "run A can't reach run B's driver RPC port (dropped, not refused)" "$(pr "run B's driver RPC port")" '^closed:TimeoutError$'
+expect "run A can't reach run B's driver UI port (dropped, not refused)" "$(pr "run B's driver UI port")" '^closed:TimeoutError$'
 expect "control: run A's driver creates a compliant executor-like pod" "$(pr 'control: a compliant executor-like pod')" '^201$'
 for c in "a pod with a non-allowlisted image|image not allowed" \
          "a pod without the configured nodeSelector|nodeSelector" \
@@ -56,7 +57,7 @@ done
 
 step "a pod outside every run can't reach a run's driver UI port (only the backend's pods may)"
 out=$(checked fence-ui "check \"control: keycloak from the probe namespace\" \"\$(status --max-time 5 http://keycloak.keycloak.svc:8080/realms/booth)\" 200
-check \"run B's driver UI from the probe namespace\" \"\$(status --max-time 5 http://driver.bspark-$b.svc:4040/)\" 000")
+check \"run B's driver UI from the probe namespace (it listens: only a drop times out)\" \"\$(curl -s -o /dev/null --connect-timeout 5 -w '%{http_code} %{errormsg}' http://driver.bspark-$b.svc:4040/ | grep -c -i 'timed out')\" 1")
 echo "$out"
 
 step "the backend's account can't write outside its fence (impersonating it)"

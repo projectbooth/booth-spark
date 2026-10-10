@@ -68,13 +68,13 @@ echo "# the submitter sees the run's UI, all of it under the run's prefix"
 loc=$(curl -s -o /dev/null -D - -H "Cookie: booth_iframe_session=$c_editor" "$CORE$P/" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
 check "Spark's root redirect is rewritten under the prefix" "$loc" "$P/jobs/"
 jobs=$(ui "$c_editor" "$P/jobs/")
-contains "the jobs page renders through core and the proxy" "$jobs" "booth-spark-ui-proof"
+contains "the jobs page renders through core and the proxy (Spark's app name is the run id)" "$jobs" "$RUN"
 contains "the job with a description is listed" "$jobs" "booth proof job"
 contains "Spark's UI root is the run's prefix (APPLICATION_WEB_PROXY_BASE)" "$jobs" "setUIRoot('$P')"
 contains "links point under the prefix" "$jobs" "href=\"$P/stages/\""
 check "a static asset loads" "$(uistatus "$c_editor" "$CORE$P/static/webui.js")" 200
 apps=$(ui "$c_editor" "$P/api/v1/applications")
-contains "the REST API answers" "$apps" '"name" : "booth-spark-ui-proof"'
+contains "the REST API answers" "$apps" "\"name\" : \"$RUN\""
 app=$(echo "$apps" | sed -n 's/.*"id" : "\([^"]*\)".*/\1/p' | head -1)
 check "the executors REST endpoint the Executors tab uses" "$(uistatus "$c_editor" "$CORE$P/api/v1/applications/$app/allexecutors")" 200
 env=$(ui "$c_editor" "$P/environment/")
@@ -113,7 +113,7 @@ $script"
 
 step "a pod outside the run can't reach its driver UI port; the backend's proxy can (above)"
 out=$(checked ui-fence "check \"control: keycloak from the probe namespace\" \"\$(status --max-time 5 http://keycloak.keycloak.svc:8080/realms/booth)\" 200
-check \"the run's driver UI, straight from the probe namespace\" \"\$(status --max-time 5 http://driver.bspark-$RUN.svc:4040/jobs/)\" 000")
+check \"the run's driver UI, straight from the probe namespace (dropped, not refused)\" \"\$(curl -s -o /dev/null --connect-timeout 5 -w '%{http_code} %{errormsg}' http://driver.bspark-$RUN.svc:4040/jobs/ | grep -c -i 'timed out')\" 1")
 echo "$out"
 
 step "fresh iframe URLs for the browser (core's navigation token lives one minute)"
