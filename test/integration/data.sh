@@ -81,7 +81,7 @@ for _ in $(seq 1 120); do
   ns_labels=$(kubectl get namespace "bspark-$A" -o jsonpath='{.metadata.labels}' 2>/dev/null || true)
   [ -n "$ns_labels" ] && break; sleep 1
 done
-echo "$ns_labels" | grep -q '"booth.projectbooth.io/database-client":"true"' || fail "the run's namespace lacks booth-database's client label: $ns_labels"
+grep -q '"booth.projectbooth.io/database-client":"true"' <<<"$(echo "$ns_labels")" || fail "the run's namespace lacks booth-database's client label: $ns_labels"
 st=""
 for _ in $(seq 1 10); do
   T_editor=$(tok editor-user)
@@ -97,11 +97,11 @@ done
 grep '\.csv$' <<<"$(mc_ "mc ls --recursive t/lake/acme-files/out/result/")" >/dev/null || fail "the run's result isn't in storage"
 grep 'metadata.json$' <<<"$(mc_ "mc ls --recursive t/lake/acme-lake/")" >/dev/null || fail "no Iceberg metadata under the warehouse"
 gw "$T_owner" GET /modules/lakehouse/api/tables
-echo "$body" | grep -q 'sales' || fail "booth-lakehouse doesn't list spark_it.sales: $code $body"
+grep -q 'sales' <<<"$(echo "$body")" || fail "booth-lakehouse doesn't list spark_it.sales: $code $body"
 v1 "$T_editor" GET "/applications/$A"
 echo "$body" | jq_ "d['dataAccess']['role']" | grep -qx editor || fail "the run's role: $body"
-echo "$body" | jq_ "d['dataAccess']['warehouseRoot']" | grep -qx "s3://lake/acme-lake" || fail "the run's warehouse root: $body"
-echo "$body" | jq_ "d['dataAccess']['storageRoots'][0]" | grep -qx "s3a://lake/acme-files" || fail "the run's storage root: $body"
+grep -qx "s3://lake/acme-lake" <<<"$(echo "$body" | jq_ "d['dataAccess']['warehouseRoot']")" || fail "the run's warehouse root: $body"
+grep -qx "s3a://lake/acme-files" <<<"$(echo "$body" | jq_ "d['dataAccess']['storageRoots'][0]")" || fail "the run's storage root: $body"
 ns_gone "bspark-$A"
 ok "read on an executor, Iceberg and Postgres written and read back, result in storage; role editor"
 
@@ -124,18 +124,18 @@ print('BEARER-IN-ENV', bool(hit), ','.join(hit))
 print('TOKEN-READABLE', os.access('/var/run/booth/token/token', os.R_OK))")
 c=$(stmt "$T_editor" "$S" python "$(tcp_py booth-spark.booth-spark.svc 8081 "$db_pod" 5432)")
 ra=$(wait_stmt "$T_editor" "$S" "$a"); rb=$(wait_stmt "$T_editor" "$S" "$b"); rc=$(wait_stmt "$T_editor" "$S" "$c")
-echo "$ra" | jq_ "d['output']['rows'][0]" | grep -qx '\[3, 42\]' || fail "the session's Iceberg query: $ra"
+grep -qx '\[3, 42\]' <<<"$(echo "$ra" | jq_ "d['output']['rows'][0]")" || fail "the session's Iceberg query: $ra"
 out=$(echo "$rb" | jq_ "d['output']['stdout']")
 echo "$out"
-echo "$out" | grep -qx "JDBC 3" || fail "the session's JDBC read: $rb"
-echo "$out" | grep -qx "BEARER-MOUNTED False" || fail "the run's bearer is mounted in its Spark container"
-echo "$out" | grep -qx "BEARER-IN-ENV False " || fail "the run's bearer is in its Spark container's environment"
+grep -qx "JDBC 3" <<<"$(echo "$out")" || fail "the session's JDBC read: $rb"
+grep -qx "BEARER-MOUNTED False" <<<"$(echo "$out")" || fail "the run's bearer is mounted in its Spark container"
+grep -qx "BEARER-IN-ENV False " <<<"$(echo "$out")" || fail "the run's bearer is in its Spark container's environment"
 # Readable by the run's code, as item 4's credential table says: it is how Iceberg authenticates.
-echo "$out" | grep -qx "TOKEN-READABLE True" || fail "the token file isn't where Spark reads it"
+grep -qx "TOKEN-READABLE True" <<<"$(echo "$out")" || fail "the token file isn't where Spark reads it"
 net=$(echo "$rc" | jq_ "d['output']['stdout']")
 echo "$net"
-echo "$net" | grep -qx "NET booth-spark.booth-spark.svc:8081=open" || fail "control: a data run can't reach the backend's internal port"
-echo "$net" | grep -qx "NET $db_pod:5432=open" || fail "control: a data run can't reach booth-database's Postgres"
+grep -qx "NET booth-spark.booth-spark.svc:8081=open" <<<"$(echo "$net")" || fail "control: a data run can't reach the backend's internal port"
+grep -qx "NET $db_pod:5432=open" <<<"$(echo "$net")" || fail "control: a data run can't reach booth-database's Postgres"
 v1 "$T_editor" DELETE "/sessions/$S" >/dev/null
 ok "Iceberg 3 rows (42), JDBC 3 rows; no bearer in Spark's container; the internal port and Postgres reachable"
 
@@ -149,7 +149,7 @@ for c in 'nosuch|{"storage":[{"backendId":"nosuch","path":"x"}]}|could not start
   id=$(echo "$body" | jq_ "d['id']")
   WAIT=120 wait_state "$T_editor" "$id" failed >/dev/null
   v1 "$T_editor" GET "/applications/$id"
-  echo "$body" | jq_ "d['reason']" | grep -Eq "$want" || fail "$name: not refused for its reason: $body"
+  grep -Eq "$want" <<<"$(echo "$body" | jq_ "d['reason']")" || fail "$name: not refused for its reason: $body"
   kubectl get namespace "bspark-$id" >/dev/null 2>&1 && fail "$name: a namespace was created for a refused run"
   ok "$name: $(echo "$body" | jq_ "d['reason']")"
 done
@@ -160,8 +160,8 @@ P=$(submit "$T_editor" nodata "$(tcp_py booth-spark.booth-spark.svc 8081 "$db_po
 WAIT=300 wait_state "$T_editor" "$P" succeeded >/dev/null
 net=$(grep '^NET ' <<<"$(logs "$T_editor" "$P")" || true)
 echo "$net"
-echo "$net" | grep -qx "NET booth-spark.booth-spark.svc:8081=closed:TimeoutError" || fail "a run without data access reaches the backend's internal port"
-echo "$net" | grep -qx "NET $db_pod:5432=closed:TimeoutError" || fail "a run without data access reaches booth-database's Postgres"
+grep -qx "NET booth-spark.booth-spark.svc:8081=closed:TimeoutError" <<<"$(echo "$net")" || fail "a run without data access reaches the backend's internal port"
+grep -qx "NET $db_pod:5432=closed:TimeoutError" <<<"$(echo "$net")" || fail "a run without data access reaches booth-database's Postgres"
 out=$(probe internal-outside "curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST http://booth-spark.booth-spark.svc:8081/internal/token; echo \" exit=\$?\"")
 echo "a pod outside every run -> the backend's internal port: $out"
 [ "$out" = "000 exit=28" ] || fail "a pod outside every run wasn't dropped at the internal port: '$out' (want a timeout)"
@@ -185,7 +185,7 @@ time.sleep(900)" >/dev/null
   for _ in $(seq 1 90); do
     v1 "$T_owner" GET "/sessions/$s"; [ "$(echo "$body" | jq_ "d['state']")" = failed ] && break; sleep 2
   done
-  echo "$body" | jq_ "d['reason']" | grep -q "lost its data access: .*$want" || fail "not ended for '$want': $body"
+  grep -q "lost its data access: .*$want" <<<"$(echo "$body" | jq_ "d['reason']")" || fail "not ended for '$want': $body"
   ns_gone "bspark-$s"
   ok "ended: $(echo "$body" | jq_ "d['reason']")"
 }
