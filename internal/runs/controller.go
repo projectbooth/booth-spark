@@ -19,7 +19,7 @@ type cluster interface {
 	Delete(ctx context.Context, ns string) error
 	Driver(ctx context.Context, ns string) (DriverState, error)
 	LogTail(ctx context.Context, ns string, maxBytes int64) (string, error)
-	RunNamespaces(ctx context.Context) (map[string]string, error)
+	RunNamespaces(ctx context.Context) (map[string]RunNamespace, error)
 	RunnerReady(ctx context.Context, ns, token string) bool
 	RunnerSubmit(ctx context.Context, ns, token string, st Statement) error
 	RunnerResult(ctx context.Context, ns, token, id string) (RunnerResult, error)
@@ -146,8 +146,19 @@ func (c *Controller) step(ctx context.Context, r Run) error {
 	return nil
 }
 
+// RunNamespace is one of this install's run namespaces: its run's id and when it was created.
+type RunNamespace struct {
+	Run     string
+	Created time.Time
+}
+
+// SweepGrace spares a namespace younger than this from the sweep: one being set up is not an
+// orphan yet. (Integration once saw the sweep delete a run-shaped namespace a second after it
+// was created, in the middle of the checks using it.)
+const SweepGrace = time.Minute
+
 // Sweep deletes run namespaces whose run is no longer live (a crash between a run's end and its
-// namespace's deletion, or a lost database).
+// namespace's deletion, or a lost database), once they are older than SweepGrace.
 func (c *Controller) Sweep(ctx context.Context) {
 	nss, err := c.Cluster.RunNamespaces(ctx)
 	if err != nil {
@@ -165,11 +176,16 @@ func (c *Controller) Sweep(ctx context.Context) {
 	for _, r := range live {
 		keep[r.Namespace] = true
 	}
-	for ns, id := range nss {
+	now := c.Now()
+	for ns, rn := range nss {
 		if keep[ns] {
 			continue
 		}
-		log.Printf("runs: sweep: deleting %s (run %s is not live)", ns, id)
+		if age := now.Sub(rn.Created); age < SweepGrace {
+			log.Printf("runs: sweep: sparing %s (run %s is not live, but the namespace is only %s old)", ns, rn.Run, age.Round(time.Second))
+			continue
+		}
+		log.Printf("runs: sweep: deleting %s (run %s is not live)", ns, rn.Run)
 		if err := c.Cluster.Delete(ctx, ns); err != nil {
 			log.Printf("runs: sweep: %s: %v", ns, err)
 		}

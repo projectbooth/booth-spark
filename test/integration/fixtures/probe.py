@@ -28,11 +28,21 @@ def api(method, path, body=None):
                                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
-            return r.status, r.read().decode()[:400]
+            return r.status, r.read().decode()[:2000]
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()[:400]
+        return e.code, e.read().decode()[:2000]
     except Exception as e:  # noqa: BLE001 - a probe reports every outcome
         return 0, type(e).__name__ + ": " + str(e)[:200]
+
+
+def refused(r):
+    """<status> <the API server's message>: a check matches the reason, not just the status."""
+    code, text = r
+    try:
+        text = json.loads(text).get("message", text)
+    except ValueError:
+        pass
+    return "%d %s" % (code, text[:200])
 
 
 def tcp(host, port, timeout=4):
@@ -101,11 +111,11 @@ listen(7078)
 if mode == "isolation":
     other = args["otherNamespace"]
     results["control: list pods in its own namespace"] = api("GET", "/api/v1/namespaces/%s/pods" % own)[0]
-    results["list pods in run B's namespace"] = api("GET", "/api/v1/namespaces/%s/pods" % other)[0]
-    results["read run B's Secrets"] = api("GET", "/api/v1/namespaces/%s/secrets" % other)[0]
-    results["read run B's namespace"] = api("GET", "/api/v1/namespaces/%s" % other)[0]
-    results["read Secrets in its own namespace"] = api("GET", "/api/v1/namespaces/%s/secrets" % own)[0]
-    results["create a pod in run B's namespace"] = pod("probe-b", args["image"], ns=other)[0]
+    results["list pods in run B's namespace"] = refused(api("GET", "/api/v1/namespaces/%s/pods" % other))
+    results["read run B's Secrets"] = refused(api("GET", "/api/v1/namespaces/%s/secrets" % other))
+    results["read run B's namespace"] = refused(api("GET", "/api/v1/namespaces/%s" % other))
+    results["read Secrets in its own namespace"] = refused(api("GET", "/api/v1/namespaces/%s/secrets" % own))
+    results["create a pod in run B's namespace"] = refused(pod("probe-b", args["image"], ns=other))
     results["control: its own driver port through its Service"] = tcp("driver.%s.svc" % own, 7078)
     results["run B's driver RPC port"] = tcp("driver.%s.svc" % other, 7078)
     results["run B's driver UI port"] = tcp("driver.%s.svc" % other, 4040)

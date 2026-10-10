@@ -54,18 +54,25 @@ ok "sql, python, a failure (with its traceback) and the session goes on, state k
 
 step "who sees a session: its submitter and the workspace's owners only"
 fresh
+# Each refusal is matched by its message, and each has its control (the same request by someone
+# allowed), so a wrong route or an unrelated error can't pass for it.
+nosuch='"no such session"'
 for who in T_editor T_owner; do
-  v1 "${!who}" GET "/sessions/$s"; [ "$code" = 200 ] || fail "$who can't see the session: $code"
+  v1 "${!who}" GET "/sessions/$s"; [ "$code" = 200 ] || fail "control: $who can't see the session: $code"
+  v1 "${!who}" GET /sessions; [ "$code" = 200 ] && echo "$body" | grep -q "$s" || fail "control: $who doesn't list the session: $code"
 done
 for who in T_editor2 T_viewer T_operator; do
-  v1 "${!who}" GET "/sessions/$s"; [ "$code" = 404 ] || fail "$who sees the session: $code"
-  v1 "${!who}" GET /sessions; echo "$body" | grep -q "$s" && fail "$who lists the session"
-  v1 "${!who}" DELETE "/sessions/$s"; [ "$code" = 404 ] || fail "$who deleted the session: $code"
+  v1 "${!who}" GET "/sessions/$s"; [ "$code" = 404 ] && echo "$body" | grep -q "$nosuch" || fail "$who sees the session: $code $body"
+  v1 "${!who}" GET /sessions; [ "$code" = 200 ] || fail "$who can't list sessions at all: $code"
+  echo "$body" | grep -q "$s" && fail "$who lists the session"
+  v1 "${!who}" DELETE "/sessions/$s"; [ "$code" = 404 ] && echo "$body" | grep -q "$nosuch" || fail "$who deleted the session: $code $body"
 done
 v1 "$T_owner" POST "/sessions/$s/statements" '{"kind":"sql","code":"select 1"}'
-[ "$code" = 403 ] || fail "an owner ran a statement in someone else's session: $code"
-v1 "$T_viewer" POST /sessions '{"name":"x"}'; [ "$code" = 403 ] || fail "a viewer started a session: $code"
-v1 "$T_operator" POST /sessions '{"name":"x"}'; [ "$code" = 403 ] || fail "an operator who is a viewer started a session: $code"
+[ "$code" = 403 ] && echo "$body" | grep -q "only the session's submitter can run statements" || fail "an owner ran a statement in someone else's session: $code $body"
+v1 "$T_viewer" POST /sessions '{"name":"x"}'
+[ "$code" = 403 ] && echo "$body" | grep -q "starting sessions needs the editor role" || fail "a viewer started a session: $code $body"
+v1 "$T_operator" POST /sessions '{"name":"x"}'
+[ "$code" = 403 ] && echo "$body" | grep -q "starting sessions needs the editor role" || fail "an operator who is a viewer started a session: $code $body"
 ok "editor2, viewer and operator get 404; an owner sees it but can't type into it; viewers can't start one"
 
 step "a backend restart mid-statement: re-adopted, the result arrives, the next statement runs"
@@ -106,7 +113,7 @@ fresh
 t0=$(date +%s)
 WAIT=180 wait_session "$T_editor" "$s" stopped >/dev/null || true
 v1 "$T_editor" GET "/sessions/$s"
-echo "$body" | jq_ "d['reason']" | grep -q "idle" || fail "not stopped as idle: $body"
+echo "$body" | jq_ "d['reason']" | grep -q "(its idle timeout)" || fail "not stopped as idle: $body"
 ns_gone "bspark-$s"
 ok "stopped as idle after $(( $(date +%s) - t0 ))s with nothing running; namespace gone"
 
@@ -132,10 +139,10 @@ v1 "$T_owner" DELETE "/sessions/$del"; [ "$code" = 202 ] || fail "owner delete: 
 wait_session "$T_editor" "$del" stopped >/dev/null
 ns_gone "bspark-$del"
 v1 "$T_editor" POST "/sessions/$del/statements" '{"kind":"sql","code":"select 1"}'
-[ "$code" = 409 ] || fail "a statement into a deleted session: $code"
+[ "$code" = 409 ] && echo "$body" | grep -q '"session_over"' || fail "a statement into a deleted session: $code $body"
 ok "deleted, namespace gone, no more statements (409)"
 
-step "an orphaned run namespace (no live run behind it) is reaped"
+step "an orphaned run namespace (no live run behind it) is spared while young, then reaped"
 fresh
 orphan=bspark-rorphan$(date +%s | tail -c 6)
 uid=$(kubectl get clusterrole booth-spark-driver -o jsonpath='{.metadata.uid}')
@@ -152,7 +159,18 @@ metadata:
   ownerReferences: [{apiVersion: rbac.authorization.k8s.io/v1, kind: ClusterRole, name: booth-spark-driver, uid: $uid}]
 EOF
 kubectl get namespace "$orphan" >/dev/null || fail "control: the orphan namespace wasn't created"
+# The race main's Integration hit (run 38068125668): a sweep sees a run-shaped namespace a moment
+# after it is created. Wait for a sweep to actually see this one (it logs sparing it) and check it
+# is still there, then that a later sweep reaps it once it is older than the grace (1m).
+for _ in $(seq 1 90); do
+  kubectl -n booth-spark logs deploy/booth-spark --since=5m 2>/dev/null | grep -q "sweep: sparing $orphan " && break
+  sleep 1
+done
+kubectl -n booth-spark logs deploy/booth-spark --since=5m | grep -q "sweep: sparing $orphan " || fail "no sweep saw $orphan within 90s"
+age=$(( $(date +%s) - $(date -d "$(kubectl get namespace "$orphan" -o jsonpath='{.metadata.creationTimestamp}')" +%s) ))
+kubectl get namespace "$orphan" -o jsonpath='{.status.phase}' | grep -qx Active || fail "$orphan didn't survive a sweep at ${age}s old"
+echo "a sweep spared $orphan at under a minute old; still active at ${age}s"
 ns_gone "$orphan"
-ok "the orphan $orphan was reaped by the controller's sweep"
+ok "the orphan $orphan was spared by a sweep while young, then reaped"
 
 echo "all session checks passed"

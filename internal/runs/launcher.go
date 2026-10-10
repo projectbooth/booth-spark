@@ -280,14 +280,14 @@ func (l *Launcher) logs(ctx context.Context, ns string, opts *corev1.PodLogOptio
 }
 
 // RunNamespaces lists the namespaces this install created.
-func (l *Launcher) RunNamespaces(ctx context.Context) (map[string]string, error) {
+func (l *Launcher) RunNamespaces(ctx context.Context) (map[string]RunNamespace, error) {
 	list, err := l.Kube.CoreV1().Namespaces().List(ctx, metav1.ListOptions{LabelSelector: LabelInstance + "=" + l.Cluster.Instance})
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{}
+	out := map[string]RunNamespace{}
 	for _, ns := range list.Items {
-		out[ns.Name] = ns.Labels[LabelRun]
+		out[ns.Name] = RunNamespace{Run: ns.Labels[LabelRun], Created: ns.CreationTimestamp.Time}
 	}
 	return out, nil
 }
