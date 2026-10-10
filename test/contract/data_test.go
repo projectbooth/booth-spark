@@ -132,7 +132,11 @@ func TestChart_DataAccess(t *testing.T) {
 	}
 
 	// Refused: data access with plain Spark (no JDBC, Iceberg or S3A), or an unpinned sidecar.
-	helmFails(t, "needs runs.image to be booth-spark's runtime image", "--api-versions", vapAPI, "--set", "dataAccess.enabled=true")
+	helmFails(t, "needs runs.image to be booth-spark's runtime image", "--api-versions", vapAPI, "--set", "dataAccess.enabled=true",
+		"--set", "runs.image=apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211")
+	// The default runs.image is the published runtime image, pinned by digest: data access needs
+	// nothing more than turning it on.
+	renderBoothModule(t, "--set", "dataAccess.enabled=true")
 	helmFails(t, "must be pinned by digest", "--api-versions", vapAPI, "--set", "dataAccess.enabled=true", "--set", "runs.image="+runtimeImage,
 		"--set", "dataAccess.sidecar.image=ghcr.io/projectbooth/credential-sidecar:latest")
 }

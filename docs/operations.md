@@ -46,8 +46,9 @@ Off by default (`dataAccess.enabled`). With it on, a run reads and writes data a
 capped at editor: the workspace's booth-database schema, its booth-lakehouse warehouse (the Iceberg
 catalog `lakehouse`), and up to 4 booth-storage locations it names. Turning it on needs:
 
-- `runs.image` set to booth-spark's runtime image (`images/spark-runtime`). The chart refuses plain
-  `apache/spark`, which has no JDBC driver, Iceberg or S3A;
+- `runs.image` to be booth-spark's runtime image (`images/spark-runtime`, published to GHCR for
+  linux/amd64 and linux/arm64), which is the default, pinned by digest. The chart refuses plain
+  `apache/spark` with data access on: it has no JDBC driver, Iceberg or S3A;
 - the data paths you have installed: `dataAccess.database.enabled`, `dataAccess.lakehouse.enabled`,
   `dataAccess.storage.enabled`. `dataAccess.database.egress` must match your booth-database
   install's namespace and Postgres labels; for an in-cluster object store (MinIO), set
