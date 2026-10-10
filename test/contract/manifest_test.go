@@ -378,7 +378,7 @@ func TestDockerfile_BaseImagesPinnedByDigest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		from := regexp.MustCompile(`(?m)^FROM\s+(\S+)(?:\s+AS\s+(\S+))?`)
+		from := regexp.MustCompile(`(?m)^FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?`)
 		matches := from.FindAllStringSubmatch(string(df), -1)
 		if len(matches) == 0 {
 			t.Fatalf("no FROM lines in %s", f)

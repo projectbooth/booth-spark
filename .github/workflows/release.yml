@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes booth-spark's two images and its Helm chart at a matching version, as booth-core,
+# booth-storage and booth-streamlit do (their release.yml): the module backend (also each data
+# run's agent) and the Spark runtime image every run's driver and executors run
+# (images/spark-runtime; runs.image, by digest). Both are built for linux/amd64 and linux/arm64,
+# like the Spark image they start from, so a run can land on either kind of node. Pushing a
+# `vX.Y.Z` tag triggers it; the job summary lists each image's digest, the value the chart pins.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The runtime image's base (apache/spark) and the build images come from Docker Hub; an
+      # authenticated pull gets the higher rate limit. booth-core's guard (its PR #11).
+      - uses: docker/login-action@v3
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/login-action@v3
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/projectbooth/booth-spark:${{ steps.version.outputs.version }}
+            ghcr.io/projectbooth/booth-spark:latest
+
+      - id: runtime
+        name: The Spark runtime image (every run's driver and executors)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/spark-runtime/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/projectbooth/booth-spark-runtime:${{ steps.version.outputs.version }}
+            ghcr.io/projectbooth/booth-spark-runtime:latest
+
+      - name: Digests
+        run: |
+          {
+            echo "### Published"
+            echo "- \`ghcr.io/projectbooth/booth-spark:${{ steps.version.outputs.version }}@${{ steps.backend.outputs.digest }}\`"
+            echo "- \`ghcr.io/projectbooth/booth-spark-runtime:${{ steps.version.outputs.version }}@${{ steps.runtime.outputs.digest }}\` (runs.image)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  chart:
+    needs: images
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Package the chart at the release version
+        working-directory: charts/booth-spark
+        run: |
+          helm package . \
+            --version "${{ needs.images.outputs.version }}" \
+            --app-version "${{ needs.images.outputs.version }}" \
+            --destination ../../dist
+
+      - name: Attach the chart to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tgz
+          generate_release_notes: true
