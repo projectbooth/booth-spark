@@ -132,7 +132,7 @@ spec:
     - expression: >-
         variables.isNamespace || (
           request.operation == 'CREATE' &&
-          (has(namespaceObject.metadata.labels) && ('booth.projectbooth.io/spark-run' in namespaceObject.metadata.labels ? namespaceObject.metadata.labels['booth.projectbooth.io/spark-run'] : '')) == variables.instance &&
+          has(namespaceObject.metadata.labels) && 'booth.projectbooth.io/spark-run' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['booth.projectbooth.io/spark-run'] == variables.instance &&
           object.roleRef.kind == 'ClusterRole' && (
             (object.roleRef.name == {{ printf "%s-run-controller" $fullname | quote }} && object.subjects.size() == 1 &&
               object.subjects[0].kind == 'ServiceAccount' && object.subjects[0].name == {{ include "booth-spark.serviceAccountName" . | quote }} &&
