@@ -110,12 +110,17 @@ fresh
 db_pod=$(kubectl -n booth-database get pod "$(ready_pod booth-database app.kubernetes.io/component=postgres)" -o jsonpath='{.status.podIP}')
 S=$(start_session "$T_editor" data '{"resources":{"executors":{"max":0}},"dataAccess":{"database":true,"lakehouse":true}}')
 WAIT=300 wait_session "$T_editor" "$S" running >/dev/null
+# The session's real data bearer, from its Secret (the test's cluster-admin view), as a SHA-256 the
+# statement compares against: the bearer itself never goes into the statement's code.
+bearer_sha=$(kubectl -n "bspark-$S" get secret data -o jsonpath='{.data.bearer}' | base64 -d | sha256sum | cut -c1-64)
+[ ${#bearer_sha} = 64 ] || fail "control: the session's data bearer Secret isn't there"
 a=$(stmt "$T_editor" "$S" sql "SELECT count(*) AS n, sum(amount) AS s FROM lakehouse.spark_it.sales")
-b=$(stmt "$T_editor" "$S" python "import os
+b=$(stmt "$T_editor" "$S" python "import hashlib, os
 props = {'driver': 'org.postgresql.Driver'}
 print('JDBC', spark.read.jdbc(os.environ['JDBC_DATABASE_URL'], 'spark_it_sales', properties=props).count())
 print('BEARER-MOUNTED', os.path.exists('/opt/booth/data'))
-print('BEARER-IN-ENV', any(len(v) == 64 and all(c in '0123456789abcdef' for c in v) for v in os.environ.values()))
+hit = [k for k, v in os.environ.items() if hashlib.sha256(v.encode()).hexdigest() == '$bearer_sha']
+print('BEARER-IN-ENV', bool(hit), ','.join(hit))
 print('TOKEN-READABLE', os.access('/var/run/booth/token/token', os.R_OK))")
 c=$(stmt "$T_editor" "$S" python "$(tcp_py booth-spark.booth-spark.svc 8081 "$db_pod" 5432)")
 ra=$(wait_stmt "$T_editor" "$S" "$a"); rb=$(wait_stmt "$T_editor" "$S" "$b"); rc=$(wait_stmt "$T_editor" "$S" "$c")
@@ -124,7 +129,7 @@ out=$(echo "$rb" | jq_ "d['output']['stdout']")
 echo "$out"
 echo "$out" | grep -qx "JDBC 3" || fail "the session's JDBC read: $rb"
 echo "$out" | grep -qx "BEARER-MOUNTED False" || fail "the run's bearer is mounted in its Spark container"
-echo "$out" | grep -qx "BEARER-IN-ENV False" || fail "the run's bearer is in its Spark container's environment"
+echo "$out" | grep -qx "BEARER-IN-ENV False " || fail "the run's bearer is in its Spark container's environment"
 # Readable by the run's code, as item 4's credential table says: it is how Iceberg authenticates.
 echo "$out" | grep -qx "TOKEN-READABLE True" || fail "the token file isn't where Spark reads it"
 net=$(echo "$rc" | jq_ "d['output']['stdout']")
