@@ -26,6 +26,8 @@ fresh() {
   T_editor=$(tok editor-user)
   T_editor2=$(tok editor2-user)
 }
+# No `PRODUCER | grep -q`: grep -q exits at its first match, and under pipefail a producer still
+# writing then fails the check (found by Integration). Checks read a here-string instead.
 # Keycloak's access tokens live 5 minutes: every step mints fresh ones, and so does every long wait.
 # gw TOKEN METHOD PATH [JSON]: another module's API through core's gateway, in $WS.
 gw() {
@@ -62,10 +64,10 @@ for _ in $(seq 1 30); do
   sleep 5
 done
 gw "$T_owner" GET /modules/lakehouse/api/warehouse
-[ "$code" = 200 ] && echo "$body" | grep -q '"backendId":"lake"' || fail "acme-analytics has no warehouse: $code $body"
+[ "$code" = 200 ] && grep -q '"backendId":"lake"' <<<"$body" || fail "acme-analytics has no warehouse: $code $body"
 echo "warehouse: $body"
-printf 'region,amount\nnorth,10\nsouth,20\neast,12\n' | mc_ "mc pipe t/lake/acme-files/in/sales.csv >/dev/null && echo put" | grep -qx put || fail "putting the input CSV"
-mc_ "mc pipe t/lake/acme-files/jobs/etl.py >/dev/null && echo put" <"$here/fixtures/etl.py" | grep -qx put || fail "putting the entry point"
+grep -qx put <<<"$(printf 'region,amount\nnorth,10\nsouth,20\neast,12\n' | mc_ "mc pipe t/lake/acme-files/in/sales.csv >/dev/null && echo put")" || fail "putting the input CSV"
+grep -qx put <<<"$(mc_ "mc pipe t/lake/acme-files/jobs/etl.py >/dev/null && echo put" <"$here/fixtures/etl.py")" || fail "putting the entry point"
 ok "backend lake (bucket lake), warehouse s3://lake/acme-lake, input and entry point under acme-files/"
 
 step "1. an editor's application from booth-storage: CSV, Iceberg, Postgres and back to storage"
@@ -99,7 +101,7 @@ grep 'metadata.json$' <<<"$(mc_ "mc ls --recursive t/lake/acme-lake/")" >/dev/nu
 gw "$T_owner" GET /modules/lakehouse/api/tables
 grep -q 'sales' <<<"$(echo "$body")" || fail "booth-lakehouse doesn't list spark_it.sales: $code $body"
 v1 "$T_editor" GET "/applications/$A"
-echo "$body" | jq_ "d['dataAccess']['role']" | grep -qx editor || fail "the run's role: $body"
+grep -qx editor <<<"$(echo "$body" | jq_ "d['dataAccess']['role']")" || fail "the run's role: $body"
 grep -qx "s3://lake/acme-lake" <<<"$(echo "$body" | jq_ "d['dataAccess']['warehouseRoot']")" || fail "the run's warehouse root: $body"
 grep -qx "s3a://lake/acme-files" <<<"$(echo "$body" | jq_ "d['dataAccess']['storageRoots'][0]")" || fail "the run's storage root: $body"
 ns_gone "bspark-$A"
