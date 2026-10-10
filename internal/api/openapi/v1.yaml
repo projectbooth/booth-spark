@@ -21,9 +21,13 @@ info:
     submitter runs statements in one. A session with nothing waiting or running and no new
     statement for its idle timeout is stopped, as is every session after its maximum lifetime.
 
-    Not in this version: data access (`dataAccess`,
-    `main.python`, `main.jar` are refused with 422), and any data access for runs submitted with a
-    workload token (ADR 0110 ruling 5).
+    Data access (docs/design-v0.md item 4): a run or session may read and write the workspace's
+    booth-database schema, its booth-lakehouse warehouse (the Iceberg catalog `lakehouse`) and up to
+    4 booth-storage locations, as its submitter, capped at editor; and an application may start from
+    a Python file or a JAR in booth-storage. Each path answers 422 on an install that doesn't offer
+    it (the chart's dataAccess). A run submitted with a workload token gets no data access in this
+    version (422, ADR 0110 ruling 5). A run whose submitter loses access fails, and its namespace
+    is deleted.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -170,7 +174,7 @@ paths:
       tags: [applications]
       operationId: getApplicationLogs
       summary: The driver's log (its submitter, a workspace owner or a platform operator)
-      description: Live while the run is live; afterwards, the last 1 MiB kept when it ended.
+      description: Live while the run is live; afterwards, the last 1 MiB kept when it ended, until sessions.resultRetention after that (then 410 cleared).
       parameters:
         - $ref: "#/components/parameters/Workspace"
         - $ref: "#/components/parameters/RunID"
@@ -189,6 +193,7 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+        "410": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
   /sessions:
     get:
@@ -301,6 +306,7 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+        "410": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
   /sessions/{id}/statements:
     get:
@@ -408,7 +414,7 @@ components:
         code:
           type: string
           description: A stable machine-readable code
-          enum: [invalid, forbidden, not_found, unavailable, at_capacity, session_over, internal]
+          enum: [invalid, forbidden, not_found, unavailable, at_capacity, session_over, cleared, internal]
     Me:
       type: object
       required: [subject, workspace, role, operator, workload, canSubmit, submitMinRole]
@@ -441,9 +447,16 @@ components:
               maxLength: 262144
               description: The application's Python source (PySpark), at most 256 KiB
             python:
-              description: Not in this version (needs data access); refused with 422
+              $ref: "#/components/schemas/FileRef"
+              description: A .py file in booth-storage, read as the submitter when the run starts
             jar:
-              description: Not in this version (needs data access); refused with 422
+              $ref: "#/components/schemas/FileRef"
+              description: A .jar file in booth-storage, read as the submitter when the run starts
+            mainClass:
+              type: string
+              maxLength: 256
+              description: The JAR's fully qualified main class (with main.jar only)
+          description: Exactly one of inlinePython, python or jar
         args:
           type: array
           maxItems: 64
@@ -471,11 +484,60 @@ components:
             spark.sql.adaptive.enabled, spark.sql.session.timeZone, spark.sql.ansi.enabled,
             spark.sql.execution.arrow.pyspark.enabled. Anything else is refused (400).
           additionalProperties: {type: string, maxLength: 256}
-        dataAccess:
-          description: Not in this version; any non-empty value is refused with 422
+        dataAccess: {$ref: "#/components/schemas/DataAccess"}
         maxDuration:
           type: string
           description: A Go duration (e.g. "30m"), at most runs.maxDuration, which is the default
+    FileRef:
+      type: object
+      additionalProperties: false
+      required: [backendId, path]
+      properties:
+        backendId: {type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"}
+        path: {type: string, maxLength: 1024, description: "Relative, no '..', '.' or empty segments"}
+    DataAccess:
+      type: object
+      additionalProperties: false
+      description: |
+        What the run reads and writes, as its submitter capped at editor (a submitter demoted to
+        viewer since gets read only). Resolved when the run starts: a location the submitter can't
+        have, or a workspace with no warehouse, fails it with the reason.
+      properties:
+        database:
+          type: boolean
+          description: The workspace's booth-database schema, as DATABASE_URL and JDBC_DATABASE_URL in every pod
+        lakehouse:
+          type: boolean
+          description: The workspace's lakehouse warehouse, as the Iceberg catalog `lakehouse`
+        storage:
+          type: array
+          maxItems: 4
+          description: booth-storage locations (s3a://, one per bucket in this version), as BOOTH_STORAGE in every pod
+          items:
+            type: object
+            additionalProperties: false
+            required: [backendId, path]
+            properties:
+              backendId: {type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"}
+              path: {type: string, maxLength: 1024}
+              access: {type: string, enum: [read, readwrite], default: read}
+    DataView:
+      type: object
+      description: A run's data access as asked and, once it started, as granted. No credential.
+      properties:
+        database: {type: boolean}
+        lakehouse: {type: boolean}
+        storage:
+          type: array
+          items:
+            type: object
+            properties:
+              backendId: {type: string}
+              path: {type: string}
+              access: {type: string, enum: [read, readwrite]}
+        role: {type: string, enum: [editor, viewer], description: "The run's token's role when it started: editor reads and writes, viewer reads"}
+        warehouseRoot: {type: string, description: "s3:// root of the warehouse"}
+        storageRoots: {type: array, items: {type: string}, description: "s3a:// root of each storage location, in order"}
     Memory:
       type: string
       pattern: "^[1-9][0-9]{0,5}[mg]$"
@@ -497,6 +559,7 @@ components:
         createdAt: {type: string, format: date-time}
         startedAt: {type: string, format: date-time}
         finishedAt: {type: string, format: date-time}
+        contentClearedAt: {type: string, format: date-time, description: "When its content (log tail; a session's statement code, output and error) was cleared, sessions.resultRetention after it ended"}
         footprintMi: {type: integer, description: "The most memory the run's pods can use at once, MiB"}
         resources:
           type: object
@@ -510,6 +573,7 @@ components:
         uiPath:
           type: string
           description: While running, where the run's Spark UI opens in the shell (its submitter only)
+        dataAccess: {$ref: "#/components/schemas/DataView"}
     SessionSpec:
       type: object
       additionalProperties: false
@@ -538,8 +602,7 @@ components:
           type: object
           description: The same allowlist as an application's conf
           additionalProperties: {type: string, maxLength: 256}
-        dataAccess:
-          description: Not in this version; any non-empty value is refused with 422
+        dataAccess: {$ref: "#/components/schemas/DataAccess"}
         idleTimeout:
           type: string
           description: "A Go duration, at most sessions.idleTimeout (the default)"
@@ -563,6 +626,7 @@ components:
         createdAt: {type: string, format: date-time}
         startedAt: {type: string, format: date-time}
         finishedAt: {type: string, format: date-time}
+        contentClearedAt: {type: string, format: date-time, description: "When its content (log tail; a session's statement code, output and error) was cleared, sessions.resultRetention after it ended"}
         lastActivityAt: {type: string, format: date-time}
         footprintMi: {type: integer}
         idleTimeout: {type: string}
@@ -576,6 +640,7 @@ components:
             minExecutors: {type: integer}
             maxExecutors: {type: integer}
         uiPath: {type: string, description: "While running, where the session's Spark UI opens in the shell (its submitter only)"}
+        dataAccess: {$ref: "#/components/schemas/DataView"}
     StatementRequest:
       type: object
       additionalProperties: false

@@ -167,3 +167,46 @@ func TestSessions_StatementsAndDelete(t *testing.T) {
 		t.Errorf("delete an ended session: %d", code)
 	}
 }
+
+// sessions.resultRetention (ADR 0110, step 4 ruling 1): once cleared, a session or an
+// application shows when, its log answers 410 cleared, and its statements keep their state and
+// timestamps without their code, output or error.
+func TestSessions_ContentCleared(t *testing.T) {
+	s := testStore(t)
+	h := sessionsRouter(t, s, auth.RoleEditor)
+	ctx := context.Background()
+	_, body := h("editor", "acme", "POST", "/v1/sessions", `{"name":"explore"}`)
+	id := idOf(t, body)
+	_, body = h("editor", "acme", "POST", "/v1/sessions/"+id+"/statements", `{"kind":"sql","code":"select secret"}`)
+	sid := idOf(t, body)
+	_, body = h("editor", "acme", "POST", "/v1/applications", `{"name":"pi","main":{"inlinePython":"print(1)"}}`)
+	app := idOf(t, body)
+	ended := time.Now().Add(-2 * time.Hour)
+	for _, rid := range []string{id, app} {
+		if err := s.Finish(ctx, rid, runs.Stopped, "", "a log", ended); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Control: before clearing, the logs and the statement's code are there.
+	if code, body := h("editor", "acme", "GET", "/v1/sessions/"+id+"/logs", ""); code != 200 || body != "a log" {
+		t.Fatalf("control: session logs before clearing: %d %q", code, body)
+	}
+	if code, body := h("editor", "acme", "GET", "/v1/applications/"+app+"/logs", ""); code != 200 || body != "a log" {
+		t.Fatalf("control: application logs before clearing: %d %q", code, body)
+	}
+	if _, err := s.ClearContent(ctx, time.Now().Add(-time.Hour), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/v1/sessions/" + id, "/v1/applications/" + app} {
+		if code, body := h("editor", "acme", "GET", p, ""); code != 200 || !strings.Contains(body, `"contentClearedAt"`) {
+			t.Errorf("%s after clearing: %d %s", p, code, body)
+		}
+		if code, body := h("editor", "acme", "GET", p+"/logs", ""); code != 410 || !strings.Contains(body, `"code":"cleared"`) {
+			t.Errorf("%s/logs after clearing: %d %s", p, code, body)
+		}
+	}
+	code, body := h("editor", "acme", "GET", "/v1/sessions/"+id+"/statements/"+sid, "")
+	if code != 200 || strings.Contains(body, "select secret") || !strings.Contains(body, `"state":"cancelled"`) || !strings.Contains(body, `"code":""`) {
+		t.Errorf("statement after clearing: %d %s", code, body)
+	}
+}

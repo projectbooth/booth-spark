@@ -29,6 +29,13 @@ spec:
   database:
     enabled: true
   {{- end }}
+  {{- if .Values.dataAccess.enabled }}
+  # ADR 0056/0058: this module mints one workload token per run (owner = the run's submitter,
+  # roleCeiling editor, subject spark:<workspace>:<runId>; docs/design-v0.md item 4). booth-core
+  # refuses unless the submitter currently holds a role in that workspace and was seen recently.
+  workloadIdentity:
+    mint: true
+  {{- end }}
   serviceRef:
     name: {{ include "booth-spark.fullname" . }}
     port: {{ .Values.service.port }}

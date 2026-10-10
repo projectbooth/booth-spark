@@ -12,7 +12,9 @@
 #   - delete on request (by a workspace owner) ends it and its namespace;
 #   - a backend restart mid-statement: the session is re-adopted, the statement's result arrives,
 #     and the next statement runs;
-#   - an orphaned run namespace (no live run in the database) is reaped.
+#   - an orphaned run namespace (no live run in the database) is reaped;
+#   - result retention (sessions.resultRetention=4m here): an ended session's statement code,
+#     output and error, and an ended application's log, are there at first, then cleared.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
@@ -31,6 +33,8 @@ ok() { echo "ok: $*"; }
 
 step "an editor's session: statements in order, state kept, a failure doesn't end it"
 fresh
+# An application that ends at once, for the retention check at the end.
+app=$(submit "$T_editor" retained "print('RETAINED-LOG-LINE')" '{"resources":{"executors":{"max":0}}}')
 s=$(start_session "$T_editor" explore '{"resources":{"executors":{"max":1}}}')
 echo "session $s"
 WAIT=300 wait_session "$T_editor" "$s" running >/dev/null
@@ -51,6 +55,9 @@ echo "$rc" | jq_ "d['error']" | grep -q "ValueError: boom from a statement" || f
 echo "$rd" | jq_ "d['output']['stdout']" | grep -q "still here 1001" || fail "state lost after a failure: $rd"
 wait_session "$T_editor" "$s" running >/dev/null
 ok "sql, python, a failure (with its traceback) and the session goes on, state kept"
+# Control for the retention check: the application ended, and its log is there.
+WAIT=300 wait_state "$T_editor" "$app" succeeded >/dev/null
+logs "$T_editor" "$app" | grep -q RETAINED-LOG-LINE || fail "control: the ended application's log isn't there"
 
 step "who sees a session: its submitter and the workspace's owners only"
 fresh
@@ -117,6 +124,12 @@ v1 "$T_editor" GET "/sessions/$s"
 echo "$body" | jq_ "d['reason']" | grep -q "(its idle timeout)" || fail "not stopped as idle: $body"
 ns_gone "bspark-$s"
 ok "stopped as idle after $(( $(date +%s) - t0 ))s with nothing running; namespace gone"
+# Control for the retention check: right after it ended, its content is all there.
+v1 "$T_editor" GET "/sessions/$s/statements/$a"
+echo "$body" | jq_ "d['code']" | grep -q "select 1 + 1" || fail "control: the ended session's statement code is gone already: $body"
+echo "$body" | jq_ "d['output']['rows'][0][0]" | grep -qx 2 || fail "control: the ended session's statement output is gone already: $body"
+v1 "$T_editor" GET "/sessions/$s/logs"; [ "$code" = 200 ] || fail "control: the ended session's log: $code $body"
+v1 "$T_editor" GET "/sessions/$s"; [ "$(echo "$body" | jq_ "d.get('contentClearedAt')")" = "" ] || fail "control: cleared at once: $body"
 
 step "its maximum lifetime stops a busy session and cancels what was running"
 fresh
@@ -173,5 +186,33 @@ kubectl get namespace "$orphan" -o jsonpath='{.status.phase}' | grep -qx Active 
 echo "a sweep spared $orphan at under a minute old; still active at ${age}s"
 ns_gone "$orphan"
 ok "the orphan $orphan was spared by a sweep while young, then reaped"
+
+step "result retention: an ended run's content is cleared after sessions.resultRetention (4m here)"
+fresh
+for _ in $(seq 1 60); do
+  v1 "$T_editor" GET "/sessions/$s"; [ -n "$(echo "$body" | jq_ "d.get('contentClearedAt')")" ] && break; sleep 10
+done
+[ -n "$(echo "$body" | jq_ "d.get('contentClearedAt')")" ] || fail "the ended session's content was never cleared: $body"
+echo "$body" | jq_ "d['state']" | grep -qx stopped || fail "the cleared session lost its state: $body"
+echo "$body" | jq_ "d['finishedAt']" | grep -q . || fail "the cleared session lost its timestamps: $body"
+for st in "$a" "$c"; do
+  v1 "$T_editor" GET "/sessions/$s/statements/$st"
+  [ "$code" = 200 ] || fail "a cleared statement: $code $body"
+  [ "$(echo "$body" | jq_ "d['code']")" = "" ] || fail "a cleared statement's code is still there: $body"
+  [ "$(echo "$body" | jq_ "d.get('output')")" = "" ] || fail "a cleared statement's output is still there: $body"
+  [ "$(echo "$body" | jq_ "d.get('error') or ''")" = "" ] || fail "a cleared statement's error is still there: $body"
+  echo "$body" | jq_ "d['finishedAt']" | grep -q . || fail "a cleared statement lost its timestamps: $body"
+done
+v1 "$T_editor" GET "/sessions/$s/statements/$a"; echo "$body" | jq_ "d['state']" | grep -qx available || fail "a cleared statement lost its state: $body"
+v1 "$T_editor" GET "/sessions/$s/statements/$c"; echo "$body" | jq_ "d['state']" | grep -qx error || fail "a cleared failed statement lost its state: $body"
+v1 "$T_editor" GET "/sessions/$s/logs"
+[ "$code" = 410 ] && echo "$body" | grep -q '"cleared"' || fail "the cleared session's log: $code $body"
+for _ in $(seq 1 30); do
+  v1 "$T_editor" GET "/applications/$app"; [ -n "$(echo "$body" | jq_ "d.get('contentClearedAt')")" ] && break; sleep 10
+done
+v1 "$T_editor" GET "/applications/$app/logs?tail=5000"
+[ "$code" = 410 ] && echo "$body" | grep -q '"cleared"' || fail "the cleared application's log: $code $body"
+v1 "$T_editor" GET "/applications/$app"; echo "$body" | jq_ "d['state']" | grep -qx succeeded || fail "the cleared application lost its state: $body"
+ok "after 4m: statement code, output and error and both logs cleared (410 cleared); states and timestamps kept"
 
 echo "all session checks passed"

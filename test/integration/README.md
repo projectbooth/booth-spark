@@ -9,6 +9,7 @@ head SHA.
 |---|---|---|
 | `standins` | booth-core's BoothModule CRD (vendored from `CORE_REF`, `fixtures/boothmodule-crd.yaml`), a throwaway PostgreSQL, then this chart with its own database Secret | The chart installs on a real 1.30+ cluster (its ValidatingAdmissionPolicy check passes against live discovery); core's real CRD schema keeps every manifest field; the backend reaches Postgres; `/healthz`; every iframe route refuses a caller without an assertion (including unknown paths); `/v1` answers 503 with no issuer configured; the service account has no Kubernetes API access and no token mounted. |
 | `real-core` | A real Keycloak (pinned digest) and a real booth-core built at `CORE_REF`, then this chart with its defaults plus every identity setting | Everything above, plus: core provisions `booth-database-credentials` (ADR 0053) and marks the module `Healthy`; `identity.sh` (below). The job first checks the vendored CRD is byte-identical to core's at `CORE_REF`. |
+| `data` | The real-core install with `dataAccess` on and runs on booth-spark's runtime image (`images/spark-runtime`, built in the job), plus booth-database, booth-storage (its s3 credential provider), booth-lakehouse with Lakekeeper and a MinIO, at pinned refs (`deploy-data.sh`), on Calico | `verify.sh` with minting declared, then `data.sh` (below). |
 
 `identity.sh` (docs/design-v0.md item 2):
 
@@ -59,9 +60,25 @@ egress, and the run namespaces' egress rules are a boundary (ADR 0110). Then, in
   through booth-core's module uninstall API with a live run. Each time, no run namespace, policy,
   binding, ClusterRole or `default` Role is left.
 
+`data.sh` (the `data` job; step 5, docs/design-v0.md item 4), through core's gateway with real tokens:
+
+- acme-analytics gets an s3 backend on MinIO and a lakehouse warehouse, as its owner; the run's input
+  CSV and entry point go into booth-storage.
+- An editor's application starts from that Python file, reads the CSV from its storage location on
+  an executor, writes and reads an Iceberg table and a Postgres table, and writes its result back.
+  Its namespace carries booth-database's client label; its view shows role `editor` and its roots.
+- A session with data access queries both tables; its Spark container has no data bearer, mounted
+  or in its environment.
+- Refused at launch, each for its reason, with no namespace created: a backend that doesn't exist,
+  and two storage locations in one bucket.
+- A data run reaches the backend's internal port and booth-database's Postgres; a run without data
+  access, and a pod outside every run, are dropped there (timeouts).
+- The submitter is demoted to viewer, then removed: each time their running session fails with the
+  reason and its namespace goes.
+
 ## Not covered yet (later build steps)
 
-- Data access (step 5).
+- The module's own UI (step 6).
 
 ## Running locally
 

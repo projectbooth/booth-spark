@@ -10,11 +10,15 @@ the six steps listed there, one PR each.
 
 ## Status
 
-Step 4 of 6: batch applications and interactive sessions run, each in its own namespace, through
+Step 5 of 6: batch applications and interactive sessions run, each in its own namespace, through
 the `/v1` API. A session takes SQL and Python statements, one at a time, and is stopped when idle
 (`sessions.idleTimeout`, default 20m) or at its maximum lifetime (`sessions.maxLifetime`, default
-12h). Each run's Spark UI opens in the shell for its submitter. Not yet: data access (step 5), the
-module's own UI and operations doc (step 6).
+12h). With `dataAccess.enabled`, a run reads and writes the workspace's booth-database schema, its
+lakehouse warehouse (Iceberg) and booth-storage locations as its submitter, capped at editor, and an
+application may start from a Python file or a JAR in booth-storage. An ended run's content
+(statement results, its log) is cleared after `sessions.resultRetention` (default 7 days). Each
+run's Spark UI opens in the shell for its submitter. Not yet: the module's own UI and the rest of
+the operations doc (step 6). Known limits are in [docs/operations.md](docs/operations.md).
 
 | Route | Reached through | Credential | What it does |
 |---|---|---|---|

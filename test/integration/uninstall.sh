@@ -17,11 +17,16 @@ image=$1
 spark_image=$2
 
 leftovers() { # FULLNAME INSTANCE: prints whatever of that install still exists
-  local f=$1 inst=$2
-  kubectl get namespaces -l "booth.projectbooth.io/spark-run=$inst" -o name
-  kubectl get validatingadmissionpolicies,validatingadmissionpolicybindings -o name | grep -E "/$f-(run-pods|fence)$" || true
-  kubectl get clusterroles,clusterrolebindings -o name | grep -E "/$f-(controller|run-controller|driver)$" || true
-  kubectl -n default get roles,rolebindings -o name | grep -E "/$f-api-endpoints$" || true
+  # A kubectl that fails prints a line too, so a failing listing never passes for an empty one.
+  local f=$1 inst=$2 out
+  out=$(kubectl get namespaces -l "booth.projectbooth.io/spark-run=$inst" -o name 2>/dev/null) || out="kubectl failed"
+  echo "$out" | grep . || true
+  out=$(kubectl get validatingadmissionpolicies,validatingadmissionpolicybindings -o name 2>/dev/null) || out="kubectl failed"
+  echo "$out" | grep -E "/$f-(run-pods|fence)$|^kubectl failed" || true
+  out=$(kubectl get clusterroles,clusterrolebindings -o name 2>/dev/null) || out="kubectl failed"
+  echo "$out" | grep -E "/$f-(controller|run-controller|driver)$|^kubectl failed" || true
+  out=$(kubectl -n default get roles,rolebindings -o name 2>/dev/null) || out="kubectl failed"
+  echo "$out" | grep -E "/$f-api-endpoints$|^kubectl failed" || true
 }
 clean() { # FULLNAME INSTANCE
   local left=""
@@ -68,6 +73,7 @@ ns3=bspark-$sess
 kubectl get namespace "$ns3" >/dev/null || fail "no namespace for live session $sess"
 echo "live session namespace $ns3"
 [ -n "$(leftovers spark-booth-spark booth-spark.spark-booth-spark)" ] || fail "control: the reinstall's objects aren't visible"
+helm status spark -n booth-spark >/dev/null || fail "control: helm doesn't see the release \"spark\" before the uninstall"
 T_owner=$(tok owner-user)
 code=$(curl -s -o /tmp/uninstall-body -w '%{http_code}' -X DELETE -H "Authorization: Bearer $T_owner" -H "X-Workspace: $WS" \
   "$core/api/modules/spark?namespace=booth-spark")
@@ -76,6 +82,8 @@ echo "core's uninstall API: $code"
 clean spark-booth-spark booth-spark.spark-booth-spark
 ns_gone "$ns2"
 ns_gone "$ns3"
-helm status spark -n booth-spark >/dev/null 2>&1 && fail "the release still exists after core's uninstall"
+# Gone means helm's "release: not found", not any failure of helm.
+rel=$(helm status spark -n booth-spark 2>&1) && fail "the release still exists after core's uninstall"
+echo "$rel" | grep -q "release: not found" || fail "helm status after core's uninstall: $rel"
 echo "ok: no release, run namespace, policy, binding or ClusterRole left"
 echo "all uninstall checks passed"

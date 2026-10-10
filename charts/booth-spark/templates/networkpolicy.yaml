@@ -1,0 +1,29 @@
+{{- if .Values.dataAccess.enabled }}
+{{- /*
+The backend's ingress, with data access on (docs/design-v0.md item 4): its public port (8080:
+booth-core's gateway and iframe proxy, probes) stays open as before; its internal port (8081),
+which serves each run's workload token against the run's data bearer and forwards broker,
+lakehouse and storage calls, only to this install's run namespaces. Needs a CNI that enforces
+NetworkPolicy (ARCHITECTURE item 37b; the Integration tests run on Calico).
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "booth-spark.fullname" . }}
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "booth-spark.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              booth.projectbooth.io/spark-run: {{ include "booth-spark.instance" . | quote }}
+      ports:
+        - {protocol: TCP, port: 8081}
+{{- end }}

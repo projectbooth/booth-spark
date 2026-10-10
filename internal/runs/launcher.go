@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,6 +166,16 @@ func (l *Launcher) Launch(ctx context.Context, r Run) error {
 		struct {
 			what string
 			do   func() error
+		}{"data secret", func() error {
+			if o.DataSecret == nil {
+				return nil
+			}
+			_, err := k.CoreV1().Secrets(ns).Create(ctx, o.DataSecret, metav1.CreateOptions{})
+			return err
+		}},
+		struct {
+			what string
+			do   func() error
 		}{"driver service", func() error {
 			_, err := k.CoreV1().Services(ns).Create(ctx, o.DriverService, metav1.CreateOptions{})
 			return err
@@ -233,6 +244,28 @@ func (l *Launcher) Driver(ctx context.Context, ns string) (DriverState, error) {
 		}
 		if t := cs.State.Terminated; t != nil && p.Status.Phase == corev1.PodFailed {
 			st.Reason = fmt.Sprintf("the driver exited with code %d (%s)", t.ExitCode, t.Reason)
+		}
+	}
+	// Data access (docs/design-v0.md item 4): the agent, the credential sidecars and the start gate
+	// run before Spark. A start gate that gave up, a sidecar that can't get its first lease, or an
+	// image that can't be pulled is the run's reason, in the container's own words.
+	for _, cs := range p.Status.InitContainerStatuses {
+		if w := cs.State.Waiting; w != nil {
+			switch w.Reason {
+			case "ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CreateContainerConfigError", "CreateContainerError":
+				st.Fatal, st.Reason = true, cs.Name+": "+w.Reason+": "+w.Message
+			case "CrashLoopBackOff":
+				if cs.RestartCount >= 3 {
+					msg := ""
+					if t := cs.LastTerminationState.Terminated; t != nil {
+						msg = ": " + strings.TrimSpace(t.Message)
+					}
+					st.Fatal, st.Reason = true, "its "+cs.Name+" keeps failing"+msg
+				}
+			}
+		}
+		if t := cs.State.Terminated; t != nil && t.ExitCode != 0 && cs.Name == "start-gate" {
+			st.Fatal, st.Reason = true, "could not start: "+strings.TrimSpace(t.Message)
 		}
 	}
 	if p.Status.Phase == corev1.PodPending && st.Reason == "" {

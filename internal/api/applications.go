@@ -8,7 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -50,10 +50,42 @@ type runView struct {
 	} `json:"resources"`
 	// UIPath is where the run's Spark UI opens in the shell while it runs (its submitter only).
 	UIPath string `json:"uiPath,omitempty"`
+	// DataAccess is what the run asked for and, once it launched, what it got.
+	DataAccess *dataView `json:"dataAccess,omitempty"`
+}
+
+// dataView is a run's data access as /v1 shows it: no credential, no object-store address.
+type dataView struct {
+	Database  bool                   `json:"database,omitempty"`
+	Lakehouse bool                   `json:"lakehouse,omitempty"`
+	Storage   []runs.StorageLocation `json:"storage,omitempty"`
+	// Role is the run's token's role when it launched: editor (read and write) or viewer (read).
+	Role string `json:"role,omitempty"`
+	// WarehouseRoot and StorageRoots are where the run's code finds its data.
+	WarehouseRoot string   `json:"warehouseRoot,omitempty"`
+	StorageRoots  []string `json:"storageRoots,omitempty"`
+}
+
+func dview(r runs.Run) *dataView {
+	d := r.Spec.DataAccess
+	if !d.Any() {
+		return nil
+	}
+	v := &dataView{Database: d.Database, Lakehouse: d.Lakehouse, Storage: d.Storage}
+	if p := r.Data; p != nil {
+		v.Role = p.Role
+		if p.Warehouse != nil {
+			v.WarehouseRoot = p.Warehouse.Root
+		}
+		for _, l := range p.Storage {
+			v.StorageRoots = append(v.StorageRoots, l.Root)
+		}
+	}
+	return v
 }
 
 func view(r runs.Run) runView {
-	v := runView{Run: r}
+	v := runView{Run: r, DataAccess: dview(r)}
 	v.Resources.DriverMemory = strconv.Itoa(r.Spec.DriverHeapMi) + "m"
 	v.Resources.ExecutorMemory = strconv.Itoa(r.Spec.ExecutorHeapMi) + "m"
 	v.Resources.MinExecutors = r.Spec.MinExecutors
@@ -101,8 +133,9 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 			apiError(w, http.StatusBadRequest, "invalid", "body: "+err.Error())
 			return
 		}
-		if id.Workload && len(strings.TrimSpace(string(spec.DataAccess))) > 0 && string(spec.DataAccess) != "null" {
-			// ADR 0110 ruling 5: a workload token names no person to read data as.
+		if id.Workload && (spec.DataAccess.Any() || spec.Main.Python != nil || spec.Main.Jar != nil) {
+			// ADR 0110 ruling 5: a workload token names no person to read data as, and an entry
+			// point in booth-storage is read as the submitter too.
 			apiError(w, http.StatusUnprocessableEntity, "unavailable", "a run submitted with a workload token has no data access in this version (ADR 0110)")
 			return
 		}
@@ -125,6 +158,7 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 		run, err := a.Store.Create(r.Context(), runs.Run{
 			ID: runID, Kind: "application", Workspace: id.Workspace, Submitter: id.Subject, SubmitterName: id.DisplayName,
 			Workload: id.Workload, Name: spec.Name, Namespace: runs.NamespacePrefix + runID, FootprintMi: v.FootprintMi(), Spec: v,
+			DataBearer: dataBearer(v),
 		}, key, a.Admission)
 		var capErr runs.ErrAtCapacity
 		switch {
@@ -234,6 +268,10 @@ func (a Applications) logs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tail = n
+	}
+	if run.ContentClearedAt != nil {
+		apiError(w, http.StatusGone, "cleared", "the run's log was cleared "+run.ContentClearedAt.UTC().Format(time.RFC3339)+" (sessions.resultRetention)")
+		return
 	}
 	var text string
 	var err error
