@@ -7,9 +7,9 @@
 //     with core's X-Booth-Identity assertion (internal/identity): the module's own UI now, the
 //     Spark UI proxy from step 2.
 //
-// In the scaffold the only authenticated endpoints are the two "who am I" calls (/v1/me and
-// /ui/api/me), which Integration uses to prove both identity paths against a real core. Runs,
-// sessions and the rest of item 6 arrive in steps 3 and 4.
+// Authenticated today: the two "who am I" calls (/v1/me and /ui/api/me), and the Spark UI proxy
+// (/runs/{id}/ui/..., step 2), over a fixed proof run table until step 3 brings real runs.
+// Sessions and the rest of item 6 arrive in steps 3 and 4.
 package api
 
 import (
@@ -19,6 +19,8 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/projectbooth/booth-spark/internal/auth"
 	"github.com/projectbooth/booth-spark/internal/identity"
+	"github.com/projectbooth/booth-spark/internal/uiproxy"
 )
 
 // Pinger is the database check /healthz runs; *pgxpool.Pool satisfies it.
@@ -47,6 +50,14 @@ type Deps struct {
 	Iframe IframeVerifier
 	// SubmitMinRole is the submit floor (ADR 0110, submit.minRole).
 	SubmitMinRole auth.Role
+	// Runs resolves a run id to its UI. Nil means no run's UI can be opened.
+	Runs RunLookup
+}
+
+// RunLookup resolves a run id to what the Spark UI proxy needs. In step 2 it is the fixed proof
+// table (config.UIProofRuns); step 3 replaces it with the module's own run records.
+type RunLookup interface {
+	Lookup(ctx context.Context, id string) (uiproxy.Run, bool)
 }
 
 // dbPingTimeout bounds the /healthz database check, so a hung Postgres shows as unhealthy within
@@ -100,9 +111,69 @@ func NewRouter(deps Deps) http.Handler {
 				SubmitMinRole: string(deps.SubmitMinRole),
 			})
 		})
+		// The Spark UI of one run (docs/design-v0.md item 5).
+		ui.Get("/runs/{id}/ui", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, uiproxy.BasePath(chi.URLParam(r, "id"))+"/", http.StatusFound)
+		})
+		ui.HandleFunc("/runs/{id}/ui/*", sparkUI(deps.Runs))
 		ui.NotFound(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "not found", http.StatusNotFound) })
 	})
 	return r
+}
+
+// sparkUI authorizes and proxies one run's Spark UI. The order matters: a caller learns nothing
+// about a run in another workspace (404, as for an unknown id), and a member of the run's
+// workspace who isn't its submitter is refused before anything reaches the driver (403). Nobody
+// else is exempt, operators and workspace owners included: the page is content the run's code
+// controls, served same-origin with the shell, so only its author may run it (ADR 0110 ruling 4,
+// ARCHITECTURE item 55).
+func sparkUI(runs RunLookup) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c := callerFrom(r.Context())
+		id := chi.URLParam(r, "id")
+		if uiproxy.BadPath(r.URL.EscapedPath()) {
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		var run uiproxy.Run
+		ok := false
+		if runs != nil && uiproxy.ValidID(id) {
+			run, ok = runs.Lookup(r.Context(), id)
+		}
+		if !ok || run.Workspace != c.Workspace {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if run.Submitter != c.Subject {
+			log.Printf("spark ui: refused run=%s to sub=%s (not its submitter)", id, c.Subject)
+			http.Error(w, "only the person who submitted this run can open its Spark UI", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "the Spark UI is read-only here; stop a run from the module's own page", http.StatusMethodNotAllowed)
+			return
+		}
+		rest := strings.TrimPrefix(r.URL.Path, uiproxy.LocalPrefix(id))
+		if uiproxy.Blocked(rest) {
+			http.Error(w, "this Spark UI action is disabled in Booth", http.StatusForbidden)
+			return
+		}
+		target, err := url.Parse(run.UIURL)
+		if err != nil {
+			http.Error(w, "this run's Spark UI address is invalid", http.StatusBadGateway)
+			return
+		}
+		uiproxy.Serve(w, r, run, target)
+	}
+}
+
+// StaticRuns is a fixed run table, keyed by id.
+type StaticRuns map[string]uiproxy.Run
+
+// Lookup implements RunLookup.
+func (s StaticRuns) Lookup(_ context.Context, id string) (uiproxy.Run, bool) {
+	run, ok := s[id]
+	return run, ok
 }
 
 // me is the "who am I" body both route groups return: what this module derived from the caller's

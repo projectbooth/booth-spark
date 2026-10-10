@@ -50,35 +50,35 @@
   ],
   "users": [
     {
-      "username": "owner-user",
+      "id": "0a000000-0000-4000-8000-000000000001", "username": "owner-user",
       "enabled": true, "emailVerified": true, "email": "owner-user@example.test",
       "firstName": "Owner", "lastName": "User",
       "credentials": [{"type": "password", "value": "__TEST_PASSWORD__", "temporary": false}],
       "groups": ["/workspaces/acme-analytics/owner"]
     },
     {
-      "username": "editor-user",
+      "id": "0a000000-0000-4000-8000-000000000002", "username": "editor-user",
       "enabled": true, "emailVerified": true, "email": "editor-user@example.test",
       "firstName": "Editor", "lastName": "User",
       "credentials": [{"type": "password", "value": "__TEST_PASSWORD__", "temporary": false}],
       "groups": ["/workspaces/acme-analytics/editor"]
     },
     {
-      "username": "viewer-user",
+      "id": "0a000000-0000-4000-8000-000000000003", "username": "viewer-user",
       "enabled": true, "emailVerified": true, "email": "viewer-user@example.test",
       "firstName": "Viewer", "lastName": "User",
       "credentials": [{"type": "password", "value": "__TEST_PASSWORD__", "temporary": false}],
       "groups": ["/workspaces/acme-analytics/viewer"]
     },
     {
-      "username": "operator-user",
+      "id": "0a000000-0000-4000-8000-000000000004", "username": "operator-user",
       "enabled": true, "emailVerified": true, "email": "operator-user@example.test",
       "firstName": "Operator", "lastName": "User",
       "credentials": [{"type": "password", "value": "__TEST_PASSWORD__", "temporary": false}],
       "groups": ["/workspaces/acme-analytics/viewer", "/platform/operator"]
     },
     {
-      "username": "outsider-user",
+      "id": "0a000000-0000-4000-8000-000000000005", "username": "outsider-user",
       "enabled": true, "emailVerified": true, "email": "outsider-user@example.test",
       "firstName": "Outsider", "lastName": "User",
       "credentials": [{"type": "password", "value": "__TEST_PASSWORD__", "temporary": false}],

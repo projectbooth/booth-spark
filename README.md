@@ -10,14 +10,14 @@ the six steps listed there, one PR each.
 
 ## Status
 
-Step 1 of 6: the backend with its health checks and manifest, the chart, CI, and the identity code.
-Nothing runs Spark yet.
+Step 2 of 6: the backend with its health checks and manifest, the chart, CI, the identity code, and
+the Spark UI proxy, proven against a real driver. The module doesn't start drivers yet (step 3).
 
 | Route | Reached through | Credential | What it does now |
 |---|---|---|---|
 | `/livez`, `/healthz` | the kubelet, booth-core's health poll | none | liveness; readiness (the module's own database) |
 | `/v1/*` | core's gateway, `/modules/spark/v1/…` | a bearer token: a person's OIDC token, or core's workload token | `GET /v1/me`: who the caller is, as this module derived it |
-| everything else | core's iframe proxy, `/iframe/spark/…` | core's `X-Booth-Identity` assertion | the module's page; `GET /ui/api/me` |
+| everything else | core's iframe proxy, `/iframe/spark/…` | core's `X-Booth-Identity` assertion | the module's page; `GET /ui/api/me`; `/runs/<id>/ui/…`, a run's Spark UI, for its submitter only (read-only, kill and thread-dump actions refused) |
 
 Each credential works on its own route group only (docs/design-v0.md item 2).
 

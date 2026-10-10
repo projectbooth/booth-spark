@@ -89,6 +89,32 @@ func TestLoad_WorkloadIssuer(t *testing.T) {
 	}
 }
 
+func TestLoad_UIProofRuns(t *testing.T) {
+	base(t)
+	if cfg, err := Load(); err != nil || len(cfg.UIProofRuns) != 0 {
+		t.Fatalf("default: %+v %v", cfg.UIProofRuns, err)
+	}
+	t.Setenv("BOOTH_UI_PROOF_RUNS", `[{"id":"proof-1","workspace":"acme","submitter":"u-1","url":"http://proof-driver.p.svc:4040"}]`)
+	cfg, err := Load()
+	if err != nil || len(cfg.UIProofRuns) != 1 || cfg.UIProofRuns[0].Submitter != "u-1" {
+		t.Fatalf("set: %+v %v", cfg.UIProofRuns, err)
+	}
+	for name, v := range map[string]string{
+		"not JSON":        `nope`,
+		"unknown field":   `[{"id":"a","workspace":"w","submitter":"s","url":"http://x","owner":"o"}]`,
+		"bad id":          `[{"id":"Proof","workspace":"w","submitter":"s","url":"http://x"}]`,
+		"reserved id":     `[{"id":"proxy","workspace":"w","submitter":"s","url":"http://x"}]`,
+		"duplicate":       `[{"id":"a","workspace":"w","submitter":"s","url":"http://x"},{"id":"a","workspace":"w","submitter":"s","url":"http://x"}]`,
+		"no submitter":    `[{"id":"a","workspace":"w","url":"http://x"}]`,
+		"not an http url": `[{"id":"a","workspace":"w","submitter":"s","url":"file:///etc"}]`,
+	} {
+		t.Setenv("BOOTH_UI_PROOF_RUNS", v)
+		if _, err := Load(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 // ADR 0110: the submit floor is editor or owner, never viewer.
 func TestLoad_SubmitMinRole(t *testing.T) {
 	base(t)

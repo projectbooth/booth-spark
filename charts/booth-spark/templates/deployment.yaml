@@ -75,6 +75,11 @@ spec:
             - name: BOOTH_WORKLOAD_ISSUER_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.uiProof.runs }}
+            # TEST ONLY (values.yaml uiProof): build step 2's fixed run table.
+            - name: BOOTH_UI_PROOF_RUNS
+              value: {{ toJson . | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

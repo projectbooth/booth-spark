@@ -497,3 +497,43 @@ and each is covered by a test.
   - kind v0.33.0 with `kindest/node:v1.35.8@sha256:07b2536e…`.
   - Keycloak `26.0@sha256:09a381c7…`, `postgres:16-alpine@sha256:721873c3…`, and
     `curlimages/curl:8.17.0@sha256:935d9100…`.
+
+## As built: step 2 (the Spark UI path), 2026-10-10
+
+Item 5's path, proven against a real Spark 4.1.3 driver (the pinned image, started by hand), a real
+booth-core and Keycloak, and a real Chromium. These are the facts the build found and what was done
+about each; each is covered by a test.
+
+- **The proxy base works through `APPLICATION_WEB_PROXY_BASE`.** Spark renders every link,
+  `setUIRoot(...)` and its JavaScript's REST calls under it. The Executors tab, which is built
+  client-side from `/api/v1/...`, loads in Chromium, and every request stays under the run's prefix.
+- **Spark's redirects are absolute and ignore the proxy base.** `/` and `/jobs` answer
+  `Location: http://<host>/jobs/`, so the proxy rewrites every `Location` under the run's prefix,
+  host dropped.
+- **`spark.ui.threadDumpsEnabled=false` does not cover the REST API.**
+  `/api/v1/applications/<app>/executors/<id>/threads` still returns full stack traces. The proxy
+  refuses that path itself, along with the `kill`, `threadDump` and `heapHistogram` paths, whatever
+  the method. With `killEnabled=false`, Spark answers the kill URLs with a redirect rather than a
+  404, so the proxy's refusal is the real boundary.
+- **Run ids can never be `proxy` or `history`.** Spark's `utils.js` treats a path segment with
+  either name as the start of an application id.
+- **What reaches the driver is an allowlist of request headers:** Accept, Accept-Language,
+  Cache-Control, the conditional headers, Range and User-Agent. Nothing identifying the viewer gets
+  through. `booth_iframe_token` is dropped from the query, although core never forwards it.
+- **The driver may not set cookies.** `Set-Cookie` is removed from its responses, because they are
+  served on the shell's origin.
+- **Authorization order:** another workspace or an unknown id is 404; same workspace but not the
+  submitter is 403, operators and owners included; a non-GET/HEAD method is 405; a blocked action is
+  403; a `..` or encoded separator is 400.
+- **Spark runs hardened as the image's own uid 185:** read-only root filesystem, emptyDirs for
+  `/tmp` and the work dir, all capabilities dropped. Step 3's driver pods start from this.
+- **Spark UI settings live in one place** (`internal/sparkconf`). The proof driver uses exactly them,
+  and a contract test keeps the two equal.
+- **Not built in this step:**
+  - The proof run table (`uiProof.runs`) is test-only, empty by default, and removed in step 3 in
+    favour of real run records.
+  - The proof driver's port is not fenced by a NetworkPolicy yet; per-run namespaces and their
+    policies are step 3.
+- **Integration loads the pinned image's linux/amd64 manifest** (`sha256:7cdb42ed…`), after
+  checking that it is that entry of the pinned index (`sha256:bf9d035a…`). `kind load` can't import
+  a multi-arch index whose other platforms aren't present locally.
