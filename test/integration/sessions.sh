@@ -18,14 +18,19 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
 . "$here/api.sh"
 
-T_editor=$(tok editor-user)
-T_editor2=$(tok editor2-user)
-T_owner=$(tok owner-user)
-T_viewer=$(tok viewer-user)
-T_operator=$(tok operator-user)
+# Keycloak's access tokens live 5 minutes and this script runs longer: every step mints fresh ones
+# (a step that outlived its token once read every session's state as empty).
+fresh() {
+  T_editor=$(tok editor-user)
+  T_editor2=$(tok editor2-user)
+  T_owner=$(tok owner-user)
+  T_viewer=$(tok viewer-user)
+  T_operator=$(tok operator-user)
+}
 ok() { echo "ok: $*"; }
 
 step "an editor's session: statements in order, state kept, a failure doesn't end it"
+fresh
 s=$(start_session "$T_editor" explore '{"resources":{"executors":{"max":1}}}')
 echo "session $s"
 WAIT=300 wait_session "$T_editor" "$s" running >/dev/null
@@ -48,6 +53,7 @@ wait_session "$T_editor" "$s" running >/dev/null
 ok "sql, python, a failure (with its traceback) and the session goes on, state kept"
 
 step "who sees a session: its submitter and the workspace's owners only"
+fresh
 for who in T_editor T_owner; do
   v1 "${!who}" GET "/sessions/$s"; [ "$code" = 200 ] || fail "$who can't see the session: $code"
 done
@@ -63,6 +69,7 @@ v1 "$T_operator" POST /sessions '{"name":"x"}'; [ "$code" = 403 ] || fail "an op
 ok "editor2, viewer and operator get 404; an owner sees it but can't type into it; viewers can't start one"
 
 step "a backend restart mid-statement: re-adopted, the result arrives, the next statement runs"
+fresh
 long=$(stmt "$T_editor" "$s" python "import time
 time.sleep(40)
 print('survived the restart')")
@@ -76,6 +83,7 @@ kubectl -n booth-spark rollout status deploy/booth-spark --timeout=180s >/dev/nu
 new=$(kubectl -n booth-spark get pod -l app.kubernetes.io/name=booth-spark --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 [ "$new" != "$old" ] || fail "the backend pod wasn't replaced"
 echo "backend $old -> $new"
+fresh
 rl=$(WAIT=180 wait_stmt "$T_editor" "$s" "$long")
 echo "$rl" | jq_ "d['output']['stdout']" | grep -q "survived the restart" || fail "after the restart: $rl"
 after=$(stmt "$T_editor" "$s" python "print('after', n)")
@@ -84,6 +92,7 @@ wait_session "$T_editor" "$s" running >/dev/null
 ok "re-adopted by the new backend, the statement's result recorded, state kept"
 
 step "idle shutdown: a statement running past the idle timeout (60s) keeps the session alive"
+fresh
 busy=$(stmt "$T_editor" "$s" python "import time
 time.sleep(80)
 print('done after 80s')")
@@ -93,6 +102,7 @@ v1 "$T_editor" GET "/sessions/$s"
 wait_stmt "$T_editor" "$s" "$busy" | grep -q "done after 80s" || fail "the busy statement"
 ok "still running at 75s, with a statement running"
 step "... then, with nothing waiting or running, it stops on its own and its namespace goes"
+fresh
 t0=$(date +%s)
 WAIT=180 wait_session "$T_editor" "$s" stopped >/dev/null || true
 v1 "$T_editor" GET "/sessions/$s"
@@ -101,10 +111,12 @@ ns_gone "bspark-$s"
 ok "stopped as idle after $(( $(date +%s) - t0 ))s with nothing running; namespace gone"
 
 step "its maximum lifetime stops a busy session and cancels what was running"
+fresh
 m=$(start_session "$T_editor" short '{"maxLifetime":"90s","resources":{"executors":{"max":0}}}')
 WAIT=300 wait_session "$T_editor" "$m" running >/dev/null
 forever=$(stmt "$T_editor" "$m" python "import time
 time.sleep(600)")
+fresh
 WAIT=240 wait_session "$T_editor" "$m" stopped >/dev/null || true
 v1 "$T_editor" GET "/sessions/$m"
 echo "$body" | jq_ "d['reason']" | grep -q "maximum lifetime" || fail "not stopped at its lifetime: $body"
@@ -113,6 +125,7 @@ ns_gone "bspark-$m"
 ok "stopped at its 90s lifetime while busy; the statement cancelled; namespace gone"
 
 step "delete on request: an owner deletes an editor's session"
+fresh
 del=$(start_session "$T_editor" to-delete '{"resources":{"executors":{"max":0}}}')
 WAIT=300 wait_session "$T_editor" "$del" running >/dev/null
 v1 "$T_owner" DELETE "/sessions/$del"; [ "$code" = 202 ] || fail "owner delete: $code $body"
@@ -123,6 +136,7 @@ v1 "$T_editor" POST "/sessions/$del/statements" '{"kind":"sql","code":"select 1"
 ok "deleted, namespace gone, no more statements (409)"
 
 step "an orphaned run namespace (no live run behind it) is reaped"
+fresh
 orphan=bspark-rorphan$(date +%s | tail -c 6)
 uid=$(kubectl get clusterrole booth-spark-driver -o jsonpath='{.metadata.uid}')
 kubectl apply -f - >/dev/null <<EOF
