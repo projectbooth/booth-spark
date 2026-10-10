@@ -91,10 +91,11 @@ T_editor=$(tok editor-user)
 log=$(logs "$T_editor" "$A")
 [ "$st" = succeeded ] || { echo "$log" | tail -60; v1 "$T_editor" GET "/applications/$A"; fail "the data run ended $st: $body"; }
 for want in "STORAGE-ROOT s3a://lake/acme-files" "READ-CSV 3" "ICEBERG-ROWS 3 SUM 42" "JDBC-ROWS 3" "WROTE-STORAGE"; do
-  echo "$log" | grep -q "^$want" || { echo "$log" | tail -40; fail "the run's log lacks '$want'"; }
+  # Not grep -q on a pipe: it stops reading at the first match, and pipefail then fails the echo.
+  grep "^$want" <<<"$log" >/dev/null || { tail -40 <<<"$log"; fail "the run's log lacks '$want'"; }
 done
-mc_ "mc ls --recursive t/lake/acme-files/out/result/" | grep -q '\.csv$' || fail "the run's result isn't in storage"
-mc_ "mc ls --recursive t/lake/acme-lake/" | grep -q 'metadata.json$' || fail "no Iceberg metadata under the warehouse"
+grep '\.csv$' <<<"$(mc_ "mc ls --recursive t/lake/acme-files/out/result/")" >/dev/null || fail "the run's result isn't in storage"
+grep 'metadata.json$' <<<"$(mc_ "mc ls --recursive t/lake/acme-lake/")" >/dev/null || fail "no Iceberg metadata under the warehouse"
 gw "$T_owner" GET /modules/lakehouse/api/tables
 echo "$body" | grep -q 'sales' || fail "booth-lakehouse doesn't list spark_it.sales: $code $body"
 v1 "$T_editor" GET "/applications/$A"
@@ -152,7 +153,7 @@ step "4. network: without data access a run is dropped at the internal port and 
 fresh
 P=$(submit "$T_editor" nodata "$(tcp_py booth-spark.booth-spark.svc 8081 "$db_pod" 5432)" '{"resources":{"executors":{"max":0}}}')
 WAIT=300 wait_state "$T_editor" "$P" succeeded >/dev/null
-net=$(logs "$T_editor" "$P" | grep '^NET ')
+net=$(grep '^NET ' <<<"$(logs "$T_editor" "$P")" || true)
 echo "$net"
 echo "$net" | grep -qx "NET booth-spark.booth-spark.svc:8081=closed:TimeoutError" || fail "a run without data access reaches the backend's internal port"
 echo "$net" | grep -qx "NET $db_pod:5432=closed:TimeoutError" || fail "a run without data access reaches booth-database's Postgres"

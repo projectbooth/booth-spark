@@ -11,6 +11,7 @@ import os
 from pyspark.sql import SparkSession
 
 spark = SparkSession.builder.getOrCreate()
+spark.sparkContext.setLogLevel("WARN")  # the markers below, not Spark's INFO lines, fill the log
 root = json.loads(os.environ["BOOTH_STORAGE"])[0]["root"]
 print("STORAGE-ROOT", root, flush=True)
 
