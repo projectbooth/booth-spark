@@ -601,3 +601,85 @@ differences from the note, and what the build found. Each is covered by a test.
 - **Quota slack:** a run namespace's quota leaves room for one pod beyond the driver and its
   executors. That is enough for a replacement executor, or for user code's own pod, which the
   policy still bounds.
+
+## As built: step 4 (sessions, statements, idle shutdown), 2026-10-10
+
+Items 6 and 7 as ruled in ADR 0110, with the coordinator's step 4 scope. The decisions the note
+didn't cover are marked (decision); the open questions are listed last, and in the PR.
+
+- **A session is a run of kind `session`**, in its own namespace exactly as in step 3: the same
+  labels, policies, quota, admission and placement. Its driver runs the module's own session
+  runner (`internal/runs/runner/session_runner.py`), not caller code. That is a small PySpark
+  program holding one SparkSession and an HTTP port, 8998. Spark Connect is not enabled, and nothing
+  outside Booth reaches a session (ADR 0110 ruling 7).
+- **The runner's port is the backend's only.** A NetworkPolicy admits the backend's pods to 8998,
+  and the UI port (4040), and nothing else. Every request must also carry the session's bearer
+  (decision): 32 random bytes per session, kept in the run record and delivered to the runner as a
+  Secret in the session's own namespace, mounted 0440 into the driver only. It never appears in
+  args, env, the executor template or the API. The run controller's ClusterRole gains
+  `secrets: create` for this (create only, never read; pinned by the exact-rules test).
+- **Statements** (`POST /v1/sessions/{id}/statements`, `{kind: sql | python, code}`) run one at a
+  time, in order, in the session's one SparkSession (`spark`, `sc`). What one Python statement
+  defines, the next can use.
+  - SQL returns `{type: table, columns, rows, truncated}`, at most 1000 rows and 1 MiB. Python
+    returns `{type: text, stdout, stderr, truncated}` (decision).
+  - A failing statement ends as `error` with its traceback, and the session goes on.
+  - At most 20 statements may be waiting or running in one session (429, decision).
+- **The database is the source of truth.** A statement is handed to the runner only after the one
+  before it has finished. The runner keeps results in memory, and a re-submit with a known id is
+  ignored. So a backend that restarts mid-statement re-adopts the session from the database and
+  collects the result. A statement recorded as running that the runner never received (the backend
+  stopped between the two writes) is handed over again.
+- **A session becomes `running` once its runner answers** (decision), not when its pod starts.
+  Statements sent before then wait.
+- **Idle shutdown and lifetime.**
+  - A session is stopped, and its namespace deleted, after `sessions.idleTimeout` (default 20m)
+    with nothing waiting or running and no new statement. A running statement is activity. Idle
+    time counts from the later of the last activity and the moment the session became ready, so a
+    slow start is not idleness.
+  - Every session is stopped after `sessions.maxLifetime` (default 12h), busy or not; what was
+    waiting or running is cancelled.
+  - A caller may ask for less of either, never more.
+  - "Releases leases": no session holds a lease until data access (step 5). When it does, deleting
+    the namespace is what ends them, as for applications.
+- **Who may do what** (the coordinator's step 4 scope):
+  - Starting a session needs `submit.minRole`, so viewers never can.
+  - Only its submitter and the workspace's owners can see, list, read the log of, or delete a
+    session. Anyone else, a platform operator included, gets 404 (decision: an operator, who may
+    stop any application, may not see sessions; their statements and results are the submitter's
+    own work).
+  - Only the submitter runs statements; an owner gets 403 (decision).
+  - A session started with a workload token gets no data access (422), like a run.
+- **`DELETE /v1/sessions/{id}`** (decision; the note's table said `POST …/stop`) stops the session
+  and deletes its namespace.
+- **Cleanup**, all through what step 3 already built:
+  - delete on request;
+  - idle expiry and maximum lifetime;
+  - module uninstall: the namespace's owner reference to the driver ClusterRole;
+  - a backend restart: re-adoption from the database, and the sweep that reaps a run namespace with
+    no live run behind it.
+- **Integration** proves it against a real core, a real cluster and Calico (`sessions.sh`):
+  - statements, a failure, visibility;
+  - idle shutdown, with a statement running past the 60s test timeout keeping the session alive;
+  - the maximum lifetime, delete, a backend restart mid-statement, and an orphan reaped.
+
+  `isolation.sh` adds two session cases: a session as the probed target (its RPC, UI and runner
+  ports dropped), and the probe run as a session statement. `egress.sh` repeats both modes from a
+  session's statement, and `uninstall.sh` leaves a session running through core's module uninstall.
+- **Not run locally.** The Integration scripts did not run on this machine before the first push: it
+  had about 1 GB of memory free, the same stack was killed for low memory in step 3, and another
+  local kind cluster (not booth-spark's) was running. The session runner itself was exercised
+  against the pinned Spark image in one container (SQL, Python, a failure, state across
+  statements, bearer refusals). The scripts were syntax-checked and run through shellcheck.
+
+Open questions, for the coordinator (in the PR too):
+
+1. **Statement results are kept in the module's database** after the session ends (up to 1 MiB
+   each, alongside the code). They can hold the data a query returned. Keep them, delete them with
+   the session, or expire them after a period?
+2. **Operators and sessions:** they are excluded, as the step 4 scope says. An operator can't free a
+   node by deleting a session; the idle timeout and the maximum lifetime are what bound one. Is that
+   the intent?
+3. **No statement cancel.** A runaway statement holds the session until its lifetime ends or the
+   session is deleted. A cancel endpoint (Spark's `cancelJobGroup`, which the runner already sets up)
+   is a small addition if wanted.

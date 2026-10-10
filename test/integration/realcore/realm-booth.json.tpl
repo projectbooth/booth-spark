@@ -64,6 +64,13 @@
       "groups": ["/workspaces/acme-analytics/editor"]
     },
     {
+      "id": "0a000000-0000-4000-8000-000000000006", "username": "editor2-user",
+      "enabled": true, "emailVerified": true, "email": "editor2-user@example.test",
+      "firstName": "Editor", "lastName": "Two",
+      "credentials": [{"type": "password", "value": "__TEST_PASSWORD__", "temporary": false}],
+      "groups": ["/workspaces/acme-analytics/editor"]
+    },
+    {
       "id": "0a000000-0000-4000-8000-000000000003", "username": "viewer-user",
       "enabled": true, "emailVerified": true, "email": "viewer-user@example.test",
       "firstName": "Viewer", "lastName": "User",

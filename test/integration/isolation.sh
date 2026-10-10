@@ -23,37 +23,59 @@ expect() { # DESCRIPTION ACTUAL PATTERN
   if echo "$2" | grep -Eq "$3"; then echo "ok: $1 ($2)"; else echo "FAIL: $1: got '$2', want /$3/"; results_ok=0; fi
 }
 
-step "run B (owner-user) runs; run A (editor-user) probes it from inside its own driver"
-b=$(submit "$T_owner" target "$(cat "$here/fixtures/probe.py")" '{"args":["listen","{}"],"resources":{"executors":{"max":0}}}')
-wait_state "$T_owner" "$b" running >/dev/null
-for _ in $(seq 1 120); do logs "$T_owner" "$b" | grep -q LISTENING && break; sleep 1; done
-logs "$T_owner" "$b" | grep -q LISTENING || fail "run B never listened on its driver ports"
+step "B is owner-user's session (its driver listens on 7078, its UI on 4040, its runner on 8998)"
+b=$(start_session "$T_owner" target '{"resources":{"executors":{"max":0}}}')
+WAIT=300 wait_session "$T_owner" "$b" running >/dev/null
+# A running statement is activity (step 4): it keeps B from idling out (sessions.idleTimeout=60s
+# here) while it is probed.
+stmt "$T_owner" "$b" python "import time
+time.sleep(1200)" >/dev/null
 args=$(python3 -c "import json,sys; print(json.dumps({'otherNamespace': 'bspark-' + sys.argv[1], 'image': sys.argv[2], 'otherImage': 'busybox:1.36', 'workspace': 'acme-analytics', 'nodeSelector': {'booth.projectbooth.io/pool': 'compute'}}))" "$b" "$image")
+
+# isolation_checks LABEL JSON: run every isolation expectation on one probe's results.
+isolation_checks() {
+  local who=$1 r=$2
+  pr() { echo "$r" | python3 -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"; }
+  expect "control: $who lists pods in its own namespace" "$(pr 'control: list pods in its own namespace')" '^200$'
+  expect "$who can't list B's pods" "$(pr "list pods in run B's namespace")" '^403$'
+  expect "$who can't read B's Secrets (its runner bearer among them)" "$(pr "read run B's Secrets")" '^403$'
+  expect "$who can't read B's namespace" "$(pr "read run B's namespace")" '^403$'
+  expect "$who can't read Secrets even in its own namespace" "$(pr 'read Secrets in its own namespace')" '^403$'
+  expect "$who can't create a pod in B's namespace" "$(pr "create a pod in run B's namespace")" '^403$'
+  expect "control: $who reaches its own driver port" "$(pr 'control: its own driver port through its Service')" '^open$'
+  expect "$who can't reach B's driver RPC port (dropped, not refused)" "$(pr "run B's driver RPC port")" '^closed:TimeoutError$'
+  expect "$who can't reach B's driver UI port (dropped, not refused)" "$(pr "run B's driver UI port")" '^closed:TimeoutError$'
+  expect "$who can't reach B's session runner port (dropped, not refused)" "$(pr "run B's session runner port")" '^closed:TimeoutError$'
+  expect "control: $who's driver creates a compliant executor-like pod" "$(pr 'control: a compliant executor-like pod')" '^201$'
+  for c in "a pod with a non-allowlisted image|image not allowed" \
+           "a pod without the configured nodeSelector|nodeSelector" \
+           "a pod as the driver account|executor account" \
+           "a pod as the default account|executor account" \
+           "an executor-account pod with a token mounted|executor account" \
+           "a pod labelled with another workspace|workspace label"; do
+    name=${c%%|*}; why=${c##*|}
+    expect "the run-pods policy refuses $who $name" "$(pr "$name")" "^(403|422) booth-spark: .*$why"
+  done
+}
+
+step "run A (editor-user's application) probes B from inside its own driver"
 extra=$(python3 -c "import json,sys; print(json.dumps({'args': ['isolation', sys.argv[1]], 'resources': {'executors': {'max': 2}}}))" "$args")
 a=$(submit "$T_editor" probe "$(cat "$here/fixtures/probe.py")" "$extra")
 WAIT=300 wait_state "$T_editor" "$a" succeeded >/dev/null
 r=$(logs "$T_editor" "$a" | sed -n 's/^PROBE //p')
 [ -n "$r" ] || fail "run A printed no probe results: $(logs "$T_editor" "$a" | tail -20)"
-pr() { echo "$r" | python3 -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"; }
-expect "control: run A lists pods in its own namespace" "$(pr 'control: list pods in its own namespace')" '^200$'
-expect "run A can't list run B's pods" "$(pr "list pods in run B's namespace")" '^403$'
-expect "run A can't read run B's Secrets" "$(pr "read run B's Secrets")" '^403$'
-expect "run A can't read run B's namespace" "$(pr "read run B's namespace")" '^403$'
-expect "run A can't read Secrets even in its own namespace" "$(pr 'read Secrets in its own namespace')" '^403$'
-expect "run A can't create a pod in run B's namespace" "$(pr "create a pod in run B's namespace")" '^403$'
-expect "control: run A reaches its own driver port" "$(pr 'control: its own driver port through its Service')" '^open$'
-expect "run A can't reach run B's driver RPC port (dropped, not refused)" "$(pr "run B's driver RPC port")" '^closed:TimeoutError$'
-expect "run A can't reach run B's driver UI port (dropped, not refused)" "$(pr "run B's driver UI port")" '^closed:TimeoutError$'
-expect "control: run A's driver creates a compliant executor-like pod" "$(pr 'control: a compliant executor-like pod')" '^201$'
-for c in "a pod with a non-allowlisted image|image not allowed" \
-         "a pod without the configured nodeSelector|nodeSelector" \
-         "a pod as the driver account|executor account" \
-         "a pod as the default account|executor account" \
-         "an executor-account pod with a token mounted|executor account" \
-         "a pod labelled with another workspace|workspace label"; do
-  name=${c%%|*}; why=${c##*|}
-  expect "the run-pods policy refuses $name" "$(pr "$name")" "^(403|422) booth-spark: .*$why"
-done
+isolation_checks "run A" "$r"
+
+step "session E (editor-user's) probes B from a statement, as its own user code"
+e=$(start_session "$T_editor" prober '{"resources":{"executors":{"max":2}}}')
+WAIT=300 wait_session "$T_editor" "$e" running >/dev/null
+code_e=$(python3 -c "import json,sys; print('import sys\nsys.argv = [\'probe\', \'isolation\', ' + json.dumps(sys.argv[1]) + ']\n' + open(sys.argv[2]).read())" "$args" "$here/fixtures/probe.py")
+se=$(stmt "$T_editor" "$e" python "$code_e")
+re_=$(WAIT=300 wait_stmt "$T_editor" "$e" "$se")
+echo "$re_" | jq_ "d['state']" | grep -qx available || fail "session E's probe statement: $re_"
+r=$(echo "$re_" | jq_ "d['output']['stdout']" | sed -n 's/^PROBE //p')
+[ -n "$r" ] || fail "session E printed no probe results: $re_"
+isolation_checks "session E" "$r"
 
 step "a pod outside every run can't reach a run's driver UI port (only the backend's pods may)"
 out=$(checked fence-ui "check \"control: keycloak from the probe namespace\" \"\$(status --max-time 5 http://keycloak.keycloak.svc:8080/realms/booth)\" 200
@@ -106,8 +128,11 @@ expect "control: run B's driver lists its own pods" "$(kubectl auth can-i list p
 expect "run B's driver can't list pods elsewhere" "$(kubectl auth can-i list pods -n booth-spark --as="system:serviceaccount:bspark-$b:driver")" '^no'
 expect "the executor pods' template mounts no token" "$(kubectl -n "bspark-$b" get configmap app -o jsonpath='{.data.executor-template\.yaml}' | grep -c 'automountServiceAccountToken: false')" '^1$'
 
-v1 "$T_owner" POST "/applications/$b/stop" >/dev/null
-wait_state "$T_owner" "$b" stopped >/dev/null
+v1 "$T_owner" DELETE "/sessions/$b" >/dev/null
+v1 "$T_editor" DELETE "/sessions/$e" >/dev/null
+wait_session "$T_owner" "$b" stopped >/dev/null
+wait_session "$T_editor" "$e" stopped >/dev/null
 ns_gone "bspark-$b"
+ns_gone "bspark-$e"
 [ "$results_ok" = 1 ] || fail "isolation checks failed (see above)"
 echo "all isolation checks passed"

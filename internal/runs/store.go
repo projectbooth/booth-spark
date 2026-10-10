@@ -50,6 +50,11 @@ type Run struct {
 	Spec          Validated  `json:"-"`
 	// Launched is set once the namespace and its objects exist.
 	Launched bool `json:"-"`
+	// LastActivityAt is a session's last activity (created, or a statement submitted, started or
+	// ended); idle shutdown counts from it.
+	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
+	// SessionToken is the bearer the backend presents to a session's runner. Never shown.
+	SessionToken string `json:"-"`
 }
 
 //go:embed migrations/*.sql
@@ -132,13 +137,14 @@ func NewID() string {
 }
 
 const runColumns = `id, kind, workspace, submitter, submitter_name, workload, name, state, reason, namespace,
-	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched`
+	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var r Run
 	var spec []byte
 	err := row.Scan(&r.ID, &r.Kind, &r.Workspace, &r.Submitter, &r.SubmitterName, &r.Workload, &r.Name, &r.State,
-		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched)
+		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched,
+		&r.LastActivityAt, &r.SessionToken)
 	if err != nil {
 		return r, err
 	}
@@ -192,9 +198,10 @@ func (s *Store) Create(ctx context.Context, r Run, idempotencyKey string, a Admi
 			key = &idempotencyKey
 		}
 		var err error
-		out, err = scanRun(tx.QueryRow(ctx, `INSERT INTO runs (id, kind, workspace, submitter, submitter_name, workload, name, state, namespace, footprint_mi, spec, idempotency_key)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11) RETURNING `+runColumns,
-			r.ID, r.Kind, r.Workspace, r.Submitter, r.SubmitterName, r.Workload, r.Name, r.Namespace, r.FootprintMi, spec, key))
+		out, err = scanRun(tx.QueryRow(ctx, `INSERT INTO runs (id, kind, workspace, submitter, submitter_name, workload, name, state, namespace, footprint_mi, spec, idempotency_key,
+				session_token, last_activity_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12, CASE WHEN $2 = 'session' THEN now() END) RETURNING `+runColumns,
+			r.ID, r.Kind, r.Workspace, r.Submitter, r.SubmitterName, r.Workload, r.Name, r.Namespace, r.FootprintMi, spec, key, r.SessionToken))
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrDuplicate
@@ -213,9 +220,9 @@ func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 	return r, err
 }
 
-// List returns a workspace's runs, newest first.
-func (s *Store) List(ctx context.Context, workspace string, limit int) ([]Run, error) {
-	return s.query(ctx, `SELECT `+runColumns+` FROM runs WHERE workspace = $1 ORDER BY created_at DESC, id LIMIT $2`, workspace, limit)
+// List returns a workspace's runs of one kind ("application" or "session"), newest first.
+func (s *Store) List(ctx context.Context, workspace, kind string, limit int) ([]Run, error) {
+	return s.query(ctx, `SELECT `+runColumns+` FROM runs WHERE workspace = $1 AND kind = $2 ORDER BY created_at DESC, id LIMIT $3`, workspace, kind, limit)
 }
 
 // Live returns every pending or running run.
@@ -258,9 +265,18 @@ func (s *Store) Finish(ctx context.Context, id string, st State, reason, logTail
 	if !st.Terminal() {
 		return fmt.Errorf("finish: %s is not terminal", st)
 	}
-	_, err := s.db.Exec(ctx, `UPDATE runs SET state = $2, reason = $3, log_tail = $4, finished_at = $5
-		WHERE id = $1 AND state IN ('pending', 'running')`, id, st, truncate(reason, 1000), logTail, at)
-	return err
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE runs SET state = $2, reason = $3, log_tail = $4, finished_at = $5
+			WHERE id = $1 AND state IN ('pending', 'running')`, id, st, truncate(reason, 1000), logTail, at)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		// A session's statements end with it.
+		_, err = tx.Exec(ctx, `UPDATE statements SET state = 'cancelled', finished_at = $2,
+			error = 'the session ended before this statement finished'
+			WHERE run_id = $1 AND state IN ('waiting', 'running')`, id, at)
+		return err
+	})
 }
 
 // RequestStop marks a live run for stopping; the controller does the rest.
@@ -284,4 +300,141 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return strings.ToValidUTF8(s[:n], "")
+}
+
+// Statement is one statement of a session (docs/design-v0.md item 6).
+type Statement struct {
+	ID         string          `json:"id"`
+	RunID      string          `json:"sessionId"`
+	Seq        int             `json:"seq"`
+	Kind       string          `json:"kind"`
+	Code       string          `json:"code"`
+	State      string          `json:"state"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	StartedAt  *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
+}
+
+// Statement states.
+const (
+	StatementWaiting   = "waiting"
+	StatementRunning   = "running"
+	StatementAvailable = "available"
+	StatementError     = "error"
+	StatementCancelled = "cancelled"
+)
+
+// ErrSessionOver is returned for a statement sent to a session that has ended (or is ending).
+var ErrSessionOver = errors.New("the session has ended")
+
+// ErrTooManyStatements is returned when a session already has as many waiting or running
+// statements as it may queue.
+var ErrTooManyStatements = errors.New("too many statements waiting in this session")
+
+const statementColumns = `id, run_id, seq, kind, code, state, output, error, created_at, started_at, finished_at`
+
+func scanStatement(row pgx.Row) (Statement, error) {
+	var st Statement
+	var out []byte
+	err := row.Scan(&st.ID, &st.RunID, &st.Seq, &st.Kind, &st.Code, &st.State, &out, &st.Error, &st.CreatedAt, &st.StartedAt, &st.FinishedAt)
+	if len(out) > 0 {
+		st.Output = out
+	}
+	return st, err
+}
+
+// AddStatement queues a statement in a live session, at most maxOpen waiting or running at once,
+// and counts as activity.
+func (s *Store) AddStatement(ctx context.Context, runID, kind, code string, maxOpen int) (Statement, error) {
+	var st Statement
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var state string
+		var stop bool
+		err := tx.QueryRow(ctx, `SELECT state, stop_requested FROM runs WHERE id = $1 AND kind = 'session' FOR UPDATE`, runID).Scan(&state, &stop)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if State(state).Terminal() || stop {
+			return ErrSessionOver
+		}
+		var open, seq int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state IN ('waiting', 'running')), coalesce(max(seq), 0)
+			FROM statements WHERE run_id = $1`, runID).Scan(&open, &seq); err != nil {
+			return err
+		}
+		if open >= maxOpen {
+			return ErrTooManyStatements
+		}
+		st, err = scanStatement(tx.QueryRow(ctx, `INSERT INTO statements (id, run_id, seq, kind, code, state)
+			VALUES ($1, $2, $3, $4, $5, 'waiting') RETURNING `+statementColumns, "s"+NewID()[1:], runID, seq+1, kind, code))
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE runs SET last_activity_at = now() WHERE id = $1`, runID)
+		return err
+	})
+	return st, err
+}
+
+// Statements lists a session's statements in order.
+func (s *Store) Statements(ctx context.Context, runID string) ([]Statement, error) {
+	return s.statements(ctx, `SELECT `+statementColumns+` FROM statements WHERE run_id = $1 ORDER BY seq`, runID)
+}
+
+// OpenStatements lists a session's waiting and running statements in order.
+func (s *Store) OpenStatements(ctx context.Context, runID string) ([]Statement, error) {
+	return s.statements(ctx, `SELECT `+statementColumns+` FROM statements WHERE run_id = $1 AND state IN ('waiting', 'running') ORDER BY seq`, runID)
+}
+
+func (s *Store) statements(ctx context.Context, sql string, args ...any) ([]Statement, error) {
+	rows, err := s.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Statement{}
+	for rows.Next() {
+		st, err := scanStatement(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// GetStatement returns one statement of a session.
+func (s *Store) GetStatement(ctx context.Context, runID, id string) (Statement, error) {
+	st, err := scanStatement(s.db.QueryRow(ctx, `SELECT `+statementColumns+` FROM statements WHERE run_id = $1 AND id = $2`, runID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return st, ErrNotFound
+	}
+	return st, err
+}
+
+// StartStatement marks a waiting statement running (it was handed to the runner): activity.
+func (s *Store) StartStatement(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.Exec(ctx, `WITH st AS (UPDATE statements SET state = 'running', started_at = $2 WHERE id = $1 AND state = 'waiting' RETURNING run_id)
+		UPDATE runs SET last_activity_at = $2 FROM st WHERE runs.id = st.run_id`, id, at)
+	return err
+}
+
+// FinishStatement records a running statement's result: activity.
+func (s *Store) FinishStatement(ctx context.Context, id, state string, output json.RawMessage, errText string, at time.Time) error {
+	if state != StatementAvailable && state != StatementError {
+		return fmt.Errorf("finish statement: %s is not a result", state)
+	}
+	var out any
+	if len(output) > 0 && string(output) != "null" {
+		out = []byte(output)
+	}
+	_, err := s.db.Exec(ctx, `WITH st AS (UPDATE statements SET state = $2, output = $3, error = $4, finished_at = $5
+			WHERE id = $1 AND state = 'running' RETURNING run_id)
+		UPDATE runs SET last_activity_at = $5 FROM st WHERE runs.id = st.run_id`, id, state, out, truncate(errText, 64<<10), at)
+	return err
 }

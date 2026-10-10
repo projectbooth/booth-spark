@@ -21,9 +21,12 @@ import (
 type RunStore interface {
 	Create(ctx context.Context, r runs.Run, idempotencyKey string, a runs.Admission) (runs.Run, error)
 	Get(ctx context.Context, id string) (runs.Run, error)
-	List(ctx context.Context, workspace string, limit int) ([]runs.Run, error)
+	List(ctx context.Context, workspace, kind string, limit int) ([]runs.Run, error)
 	RequestStop(ctx context.Context, id string) error
 	LogTail(ctx context.Context, id string) (string, error)
+	AddStatement(ctx context.Context, runID, kind, code string, maxOpen int) (runs.Statement, error)
+	Statements(ctx context.Context, runID string) ([]runs.Statement, error)
+	GetStatement(ctx context.Context, runID, id string) (runs.Statement, error)
 }
 
 // Applications is the /v1 job-submission API's configuration (docs/design-v0.md item 6).
@@ -76,6 +79,7 @@ func (a Applications) routes(r chi.Router, minRole auth.Role) {
 	r.Get("/applications/{id}", a.get)
 	r.Post("/applications/{id}/stop", a.stop)
 	r.Get("/applications/{id}/logs", a.logs)
+	a.sessionRoutes(r, minRole)
 }
 
 func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
@@ -142,7 +146,7 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 
 func (a Applications) list(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	list, err := a.Store.List(r.Context(), id.Workspace, 200)
+	list, err := a.Store.List(r.Context(), id.Workspace, "application", 200)
 	if err != nil {
 		log.Printf("api: list runs: %v", err)
 		apiError(w, http.StatusInternalServerError, "internal", "could not list runs")
@@ -165,7 +169,7 @@ func (a Applications) list(w http.ResponseWriter, r *http.Request) {
 func (a Applications) load(w http.ResponseWriter, r *http.Request) (runs.Run, auth.Identity, bool) {
 	id, _ := auth.FromContext(r.Context())
 	run, err := a.Store.Get(r.Context(), chi.URLParam(r, "id"))
-	if errors.Is(err, runs.ErrNotFound) || (err == nil && run.Workspace != id.Workspace) {
+	if errors.Is(err, runs.ErrNotFound) || (err == nil && (run.Workspace != id.Workspace || run.Kind != "application")) {
 		apiError(w, http.StatusNotFound, "not_found", "no such run in this workspace")
 		return run, id, false
 	}

@@ -159,7 +159,11 @@ jobs:
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/runs.sh
 
-      - name: "Isolation (item 3): run A against run B, the run-pods policy, the driver UI port, the backend's fence, the executor account"
+      - name: "Sessions (step 4): statements, visibility, idle shutdown, lifetime, delete, a backend restart mid-statement, orphan reaping"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: test/integration/sessions.sh
+
+      - name: "Isolation (item 3): run A and session E against session B, the run-pods policy, the driver ports, the backend's fence, the executor account"
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/isolation.sh
 

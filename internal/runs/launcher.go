@@ -155,6 +155,16 @@ func (l *Launcher) Launch(ctx context.Context, r Run) error {
 		struct {
 			what string
 			do   func() error
+		}{"session secret", func() error {
+			if o.SessionSecret == nil {
+				return nil
+			}
+			_, err := k.CoreV1().Secrets(ns).Create(ctx, o.SessionSecret, metav1.CreateOptions{})
+			return err
+		}},
+		struct {
+			what string
+			do   func() error
 		}{"driver service", func() error {
 			_, err := k.CoreV1().Services(ns).Create(ctx, o.DriverService, metav1.CreateOptions{})
 			return err

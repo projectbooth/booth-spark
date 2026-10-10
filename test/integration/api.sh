@@ -91,3 +91,49 @@ ns_gone() {
   done
   fail "namespace $1 still exists"
 }
+
+# --- sessions (build step 4) ---
+
+# start_session TOKEN NAME [EXTRA_JSON_FIELDS]: starts a session; prints its id.
+start_session() {
+  local body
+  body=$(python3 -c "import json,sys; d={'name':sys.argv[1]}; d.update(json.loads(sys.argv[2] or '{}')); print(json.dumps(d))" "$2" "${3:-}")
+  v1 "$1" POST /sessions "$body"
+  [ "$code" = 201 ] || fail "start session $2: $code $body"
+  echo "$body" | jq_ "d['id']"
+}
+
+# wait_session TOKEN ID STATE...: waits until the session is in one of the states; prints it.
+wait_session() {
+  local t=$1 id=$2 st=""
+  shift 2
+  for _ in $(seq 1 "${WAIT:-240}"); do
+    v1 "$t" GET "/sessions/$id"
+    st=$(echo "$body" | jq_ "d.get('state')")
+    for want in "$@"; do [ "$st" = "$want" ] && { echo "$st"; return 0; }; done
+    case "$st" in succeeded|failed|stopped) fail "session $id is $st ($(echo "$body" | jq_ "d.get('reason')")), wanted $*" ;; esac
+    sleep 1
+  done
+  fail "session $id still '$st' after ${WAIT:-240}s, wanted $*"
+}
+
+# stmt TOKEN SESSION KIND CODE: sends a statement; prints its id.
+stmt() {
+  local data
+  data=$(python3 -c "import json,sys; print(json.dumps({'kind':sys.argv[1],'code':sys.argv[2]}))" "$3" "$4")
+  v1 "$1" POST "/sessions/$2/statements" "$data"
+  [ "$code" = 201 ] || fail "statement in $2: $code $body"
+  echo "$body" | jq_ "d['id']"
+}
+
+# wait_stmt TOKEN SESSION STATEMENT: waits until the statement has ended; prints its JSON.
+wait_stmt() {
+  local st=""
+  for _ in $(seq 1 "${WAIT:-240}"); do
+    v1 "$1" GET "/sessions/$2/statements/$3"
+    st=$(echo "$body" | jq_ "d.get('state')")
+    case "$st" in available|error|cancelled) echo "$body"; return 0 ;; esac
+    sleep 1
+  done
+  fail "statement $3 still '$st' after ${WAIT:-240}s"
+}

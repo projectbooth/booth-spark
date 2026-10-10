@@ -94,13 +94,15 @@ func run() error {
 		deps.Applications = &api.Applications{
 			Store: store,
 			Limits: runs.Limits{MaxExecutors: rc.MaxExecutors, DefaultExecutors: rc.DefaultExecutors,
-				DriverMemory: rc.Driver.Memory, ExecutorMemory: rc.Executor.Memory, MaxMemory: rc.MaxMemory, MaxDuration: rc.MaxDurationD},
+				DriverMemory: rc.Driver.Memory, ExecutorMemory: rc.Executor.Memory, MaxMemory: rc.MaxMemory, MaxDuration: rc.MaxDurationD,
+				SessionIdleTimeout: cfg.SessionIdleTimeout, SessionMaxLifetime: cfg.SessionMaxLifetime},
 			Admission: runs.Admission{MaxRunning: rc.MaxRunning, MaxRunningPerWorkspace: rc.MaxRunningPerWorkspace, MemoryBudgetMi: rc.MemoryBudgetMi},
 			LiveLogs: func(ctx context.Context, ns string, tail int64) (string, error) {
 				return launcher.Logs(ctx, ns, tail, 1<<20)
 			},
 		}
-		log.Printf("runs: instance=%s image=%s maxRunning=%d memoryBudget=%dMi egress=%s", rc.Instance, rc.Image, rc.MaxRunning, rc.MemoryBudgetMi, rc.Egress.Mode)
+		log.Printf("runs: instance=%s image=%s maxRunning=%d memoryBudget=%dMi egress=%s sessions: idle=%s lifetime=%s",
+			rc.Instance, rc.Image, rc.MaxRunning, rc.MemoryBudgetMi, rc.Egress.Mode, cfg.SessionIdleTimeout, cfg.SessionMaxLifetime)
 	} else {
 		log.Printf("runs: BOOTH_RUNS is not set; no runs can be submitted")
 	}

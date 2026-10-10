@@ -183,7 +183,7 @@ func TestBuild_NetworkPolicies(t *testing.T) {
 		return out
 	}
 	c := testCluster()
-	if got := names(c); !reflect.DeepEqual(got, map[string]bool{"default-deny": true, "same-run": true, "dns": true, "driver-to-api": true, "backend-to-driver-ui": true, "internet": true}) {
+	if got := names(c); !reflect.DeepEqual(got, map[string]bool{"default-deny": true, "same-run": true, "dns": true, "driver-to-api": true, "backend-to-driver": true, "internet": true}) {
 		t.Errorf("open: %v", got)
 	}
 	c.Egress.Mode = "closed"
@@ -204,10 +204,11 @@ func TestBuild_NetworkPolicies(t *testing.T) {
 		api.Spec.Egress[0].Ports[0].Port.IntVal != 6443 {
 		t.Errorf("api rule = %+v", api.Spec)
 	}
-	ui := o.NetworkPolicies[pols["backend-to-driver-ui"]]
+	ui := o.NetworkPolicies[pols["backend-to-driver"]]
 	from := ui.Spec.Ingress[0].From[0]
 	if from.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "booth-spark" ||
-		!reflect.DeepEqual(from.PodSelector.MatchLabels, testCluster().BackendPodLabels) || ui.Spec.Ingress[0].Ports[0].Port.IntVal != UIPort {
+		!reflect.DeepEqual(from.PodSelector.MatchLabels, testCluster().BackendPodLabels) || ui.Spec.Ingress[0].Ports[0].Port.IntVal != UIPort ||
+		len(ui.Spec.Ingress[0].Ports) != 2 || ui.Spec.Ingress[0].Ports[1].Port.IntVal != SessionPort {
 		t.Errorf("ui rule = %+v", ui.Spec)
 	}
 }

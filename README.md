@@ -10,9 +10,11 @@ the six steps listed there, one PR each.
 
 ## Status
 
-Step 3 of 6: batch applications run, each in its own namespace, through the `/v1` API, and each
-run's Spark UI opens in the shell for its submitter. Not yet: sessions and idle shutdown (step 4),
-data access (step 5), the module's own UI and operations doc (step 6).
+Step 4 of 6: batch applications and interactive sessions run, each in its own namespace, through
+the `/v1` API. A session takes SQL and Python statements, one at a time, and is stopped when idle
+(`sessions.idleTimeout`, default 20m) or at its maximum lifetime (`sessions.maxLifetime`, default
+12h). Each run's Spark UI opens in the shell for its submitter. Not yet: data access (step 5), the
+module's own UI and operations doc (step 6).
 
 | Route | Reached through | Credential | What it does |
 |---|---|---|---|

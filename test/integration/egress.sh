@@ -34,6 +34,17 @@ probe_run() { # prints the probe's JSON
   WAIT=300 wait_state "$t" "$id" succeeded >/dev/null
   logs "$t" "$id" | sed -n 's/^PROBE //p'
 }
+probe_session() { # the same probe as a statement in a fresh session (step 4); prints its JSON
+  local t id sid pycode res
+  t=$(tok editor-user)
+  id=$(start_session "$t" egress '{"resources":{"executors":{"max":0}}}')
+  WAIT=300 wait_session "$t" "$id" running >/dev/null
+  pycode=$(python3 -c "import json,sys; print('import sys\nsys.argv = [\'probe\', \'egress\', ' + json.dumps(sys.argv[1]) + ']\n' + open(sys.argv[2]).read())" "$targets" "$here/fixtures/probe.py")
+  sid=$(stmt "$t" "$id" python "$pycode")
+  res=$(WAIT=300 wait_stmt "$t" "$id" "$sid")
+  v1 "$t" DELETE "/sessions/$id" >/dev/null
+  echo "$res" | jq_ "d['output']['stdout']" | sed -n 's/^PROBE //p'
+}
 pr() { echo "$r" | python3 -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"; }
 controls() {
   expect "control: DNS resolves" "$(pr 'control: DNS')" '^[0-9.]+$'
@@ -49,6 +60,11 @@ r=$(probe_run); echo "$r"
 controls
 expect "reachable: the internet" "$(pr 'the internet (1.1.1.1:443)')" '^open$'
 expect "reachable: the internet by name" "$(pr 'the internet by name (example.com:443)')" '^open$'
+step "... and the same from a session's statement"
+r=$(probe_session); echo "$r"
+[ -n "$r" ] || fail "the session's probe printed nothing"
+controls
+expect "reachable from a session: the internet" "$(pr 'the internet (1.1.1.1:443)')" '^open$'
 
 step "runs.egress.mode=closed: no internet either"
 bash "$here/install-spark.sh" "$image" "$spark_image" --set runs.egress.mode=closed >/dev/null
@@ -57,6 +73,11 @@ r=$(probe_run); echo "$r"
 controls
 expect "not reachable: the internet (dropped)" "$(pr 'the internet (1.1.1.1:443)')" '^closed:TimeoutError$'
 expect "not reachable: the internet by name (dropped)" "$(pr 'the internet by name (example.com:443)')" '^closed:TimeoutError$'
+step "... and the same from a session's statement"
+r=$(probe_session); echo "$r"
+[ -n "$r" ] || fail "the session's probe printed nothing"
+controls
+expect "not reachable from a session: the internet (dropped)" "$(pr 'the internet (1.1.1.1:443)')" '^closed:TimeoutError$'
 
 step "back to the default"
 bash "$here/install-spark.sh" "$image" "$spark_image" >/dev/null

@@ -86,7 +86,7 @@ func TestStore_CreateGetList(t *testing.T) {
 		t.Errorf("unknown: %v", err)
 	}
 	_, _ = s.Create(ctx, newRun(t, "globex", "u2"), "", roomy)
-	list, err := s.List(ctx, "acme", 10)
+	list, err := s.List(ctx, "acme", "application", 10)
 	if err != nil || len(list) != 1 || list[0].Workspace != "acme" {
 		t.Errorf("list = %+v, %v", list, err)
 	}
@@ -179,6 +179,7 @@ type fakeCluster struct {
 	launchErr         error
 	driver            map[string]DriverState
 	namespaces        map[string]string
+	runner            *fakeRunner
 }
 
 func (f *fakeCluster) Launch(_ context.Context, r Run) error {
@@ -284,4 +285,22 @@ func TestController_Sweep(t *testing.T) {
 	if len(f.deleted) != 1 || f.deleted[0] != "bspark-rgone" {
 		t.Errorf("swept %v, want only the orphan", f.deleted)
 	}
+}
+
+func (f *fakeCluster) RunnerReady(ctx context.Context, ns, token string) bool {
+	return f.runner != nil && f.runner.RunnerReady(ctx, ns, token)
+}
+
+func (f *fakeCluster) RunnerSubmit(ctx context.Context, ns, token string, st Statement) error {
+	if f.runner == nil {
+		return errors.New("no runner")
+	}
+	return f.runner.RunnerSubmit(ctx, ns, token, st)
+}
+
+func (f *fakeCluster) RunnerResult(ctx context.Context, ns, token, id string) (RunnerResult, error) {
+	if f.runner == nil {
+		return RunnerResult{}, errors.New("no runner")
+	}
+	return f.runner.RunnerResult(ctx, ns, token, id)
 }

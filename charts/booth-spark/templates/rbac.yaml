@@ -83,8 +83,8 @@ subjects:
     namespace: {{ .Release.Namespace }}
 ---
 # What the backend does inside one run's namespace, bound there (only there) by the backend itself
-# right after creating it: exactly the calls internal/runs/launcher.go makes. No Secret read, no
-# exec, no update of anything.
+# right after creating it: exactly the calls internal/runs/launcher.go makes. Secrets are create
+# only (a session's runner bearer, step 4): never read back. No exec, no update of anything.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -93,7 +93,7 @@ metadata:
     {{- include "booth-spark.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: [serviceaccounts, configmaps, services, resourcequotas, limitranges]
+    resources: [serviceaccounts, configmaps, services, resourcequotas, limitranges, secrets]
     verbs: [create]
   - apiGroups: [""]
     resources: [pods]

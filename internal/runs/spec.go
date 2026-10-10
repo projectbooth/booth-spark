@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Spec is what a caller submits: POST /v1/applications' body (docs/design-v0.md item 6). Every
@@ -57,14 +58,30 @@ type ExecutorSize struct {
 	Memory string `json:"memory,omitempty"`
 }
 
-// Limits are the chart's `runs` settings that bound what a caller may ask for.
+// SessionSpec is what a caller submits to start a session: POST /v1/sessions' body
+// (docs/design-v0.md item 6). A session runs no code of its own; statements go to it afterwards.
+type SessionSpec struct {
+	Name       string            `json:"name"`
+	Resources  Resources         `json:"resources,omitempty"`
+	Conf       map[string]string `json:"conf,omitempty"`
+	DataAccess json.RawMessage   `json:"dataAccess,omitempty"`
+	// IdleTimeout stops the session after this long with no statement waiting or running and no
+	// new one (Go duration); at most Limits.SessionIdleTimeout, which is also the default.
+	IdleTimeout string `json:"idleTimeout,omitempty"`
+	// MaxLifetime stops the session after this long regardless; at most Limits.SessionMaxLifetime.
+	MaxLifetime string `json:"maxLifetime,omitempty"`
+}
+
+// Limits are the chart's `runs` and `sessions` settings that bound what a caller may ask for.
 type Limits struct {
-	MaxExecutors     int
-	DefaultExecutors int
-	DriverMemory     string // default heap
-	ExecutorMemory   string // default heap
-	MaxMemory        string // largest heap a caller may ask for, driver or executor
-	MaxDuration      time.Duration
+	MaxExecutors       int
+	DefaultExecutors   int
+	DriverMemory       string // default heap
+	ExecutorMemory     string // default heap
+	MaxMemory          string // largest heap a caller may ask for, driver or executor
+	MaxDuration        time.Duration
+	SessionIdleTimeout time.Duration
+	SessionMaxLifetime time.Duration
 }
 
 // Validated is a Spec with every default applied and every value checked.
@@ -75,6 +92,8 @@ type Validated struct {
 	MinExecutors   int
 	MaxExecutors   int
 	Duration       time.Duration
+	// IdleTimeout is a session's (zero for an application).
+	IdleTimeout time.Duration
 }
 
 // A ValidationError is the caller's mistake (400). An Unavailable is something this version can't
@@ -138,29 +157,75 @@ func PodMemoryMi(heapMi int) int {
 	return heapMi + overhead
 }
 
-// Validate applies defaults and checks a Spec against l.
+// Validate applies defaults and checks an application's Spec against l.
 func Validate(s Spec, l Limits) (Validated, error) {
-	v := Validated{Spec: s}
-	if !nameRE.MatchString(s.Name) {
-		return v, invalid("name: 1 to 100 characters, letters, digits, spaces, '.', '_' or '-', starting with a letter or digit")
-	}
 	if len(s.Main.Python) > 0 || len(s.Main.Jar) > 0 {
-		return v, Unavailable{"main.python and main.jar read files from booth-storage, which needs data access; that arrives in a later release. Use main.inlinePython."}
+		return Validated{Spec: s}, Unavailable{"main.python and main.jar read files from booth-storage, which needs data access; that arrives in a later release. Use main.inlinePython."}
+	}
+	if !nameRE.MatchString(s.Name) {
+		return Validated{Spec: s}, invalid("name: 1 to 100 characters, letters, digits, spaces, '.', '_' or '-', starting with a letter or digit")
 	}
 	if strings.TrimSpace(s.Main.InlinePython) == "" {
-		return v, invalid("main.inlinePython is required")
+		return Validated{Spec: s}, invalid("main.inlinePython is required")
 	}
 	if len(s.Main.InlinePython) > maxInlinePython {
-		return v, invalid("main.inlinePython is larger than %d KiB", maxInlinePython>>10)
+		return Validated{Spec: s}, invalid("main.inlinePython is larger than %d KiB", maxInlinePython>>10)
 	}
 	if len(s.Args) > maxArgs {
-		return v, invalid("at most %d args", maxArgs)
+		return Validated{Spec: s}, invalid("at most %d args", maxArgs)
 	}
 	for i, a := range s.Args {
 		if len(a) > maxArgLen || strings.ContainsRune(a, 0) {
-			return v, invalid("args[%d] is longer than %d bytes or contains NUL", i, maxArgLen)
+			return Validated{Spec: s}, invalid("args[%d] is longer than %d bytes or contains NUL", i, maxArgLen)
 		}
 	}
+	v, err := validateCommon(s, l)
+	if err != nil {
+		return v, err
+	}
+	v.Duration = l.MaxDuration
+	if s.MaxDuration != "" {
+		d, err := time.ParseDuration(s.MaxDuration)
+		if err != nil || d <= 0 || d > l.MaxDuration {
+			return v, invalid("maxDuration: a duration up to %s", l.MaxDuration)
+		}
+		v.Duration = d
+	}
+	return v, nil
+}
+
+// ValidateSession applies defaults and checks a SessionSpec against l. The result carries no
+// code: a session's driver runs the module's session runner (internal/runs/runner).
+func ValidateSession(s SessionSpec, l Limits) (Validated, error) {
+	if !nameRE.MatchString(s.Name) {
+		return Validated{}, invalid("name: 1 to 100 characters, letters, digits, spaces, '.', '_' or '-', starting with a letter or digit")
+	}
+	v, err := validateCommon(Spec{Name: s.Name, Resources: s.Resources, Conf: s.Conf, DataAccess: s.DataAccess}, l)
+	if err != nil {
+		return v, err
+	}
+	dur := func(field, given string, max time.Duration) (time.Duration, error) {
+		if given == "" {
+			return max, nil
+		}
+		d, err := time.ParseDuration(given)
+		if err != nil || d < time.Second || d > max {
+			return 0, invalid("%s: a duration from 1s up to %s", field, max)
+		}
+		return d, nil
+	}
+	if v.IdleTimeout, err = dur("idleTimeout", s.IdleTimeout, l.SessionIdleTimeout); err != nil {
+		return v, err
+	}
+	if v.Duration, err = dur("maxLifetime", s.MaxLifetime, l.SessionMaxLifetime); err != nil {
+		return v, err
+	}
+	return v, nil
+}
+
+// validateCommon checks what applications and sessions share: conf, data access and resources.
+func validateCommon(s Spec, l Limits) (Validated, error) {
+	v := Validated{Spec: s}
 	keys := make([]string, 0, len(s.Conf))
 	for k := range s.Conf {
 		keys = append(keys, k)
@@ -170,14 +235,13 @@ func Validate(s Spec, l Limits) (Validated, error) {
 		if !AllowedConf[k] {
 			return v, invalid("conf %q can't be set; allowed: %s", k, strings.Join(allowedConfList(), ", "))
 		}
-		if len(s.Conf[k]) > maxConfValue || strings.ContainsAny(s.Conf[k], "\n\r\x00") {
+		if len(s.Conf[k]) > maxConfValue || strings.ContainsFunc(s.Conf[k], unicode.IsControl) {
 			return v, invalid("conf %q: value too long or not a single line", k)
 		}
 	}
 	if raw := strings.TrimSpace(string(s.DataAccess)); raw != "" && raw != "null" && raw != "{}" {
 		return v, Unavailable{"dataAccess arrives in a later release; this run would have no data access"}
 	}
-
 	maxHeap, err := HeapMi(l.MaxMemory)
 	if err != nil {
 		return v, fmt.Errorf("runs limits: %w", err)
@@ -210,14 +274,6 @@ func Validate(s Spec, l Limits) (Validated, error) {
 	}
 	if v.MinExecutors < 0 || v.MaxExecutors < v.MinExecutors || v.MaxExecutors > l.MaxExecutors {
 		return v, invalid("resources.executors: need 0 <= min <= max <= %d", l.MaxExecutors)
-	}
-	v.Duration = l.MaxDuration
-	if s.MaxDuration != "" {
-		d, err := time.ParseDuration(s.MaxDuration)
-		if err != nil || d <= 0 || d > l.MaxDuration {
-			return v, invalid("maxDuration: a duration up to %s", l.MaxDuration)
-		}
-		v.Duration = d
 	}
 	return v, nil
 }
