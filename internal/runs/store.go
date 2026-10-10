@@ -55,6 +55,9 @@ type Run struct {
 	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
 	// SessionToken is the bearer the backend presents to a session's runner. Never shown.
 	SessionToken string `json:"-"`
+	// ContentClearedAt is when the run's content (its log tail; a session's statement code, output
+	// and error) was cleared, sessions.resultRetention after it ended.
+	ContentClearedAt *time.Time `json:"contentClearedAt,omitempty"`
 }
 
 //go:embed migrations/*.sql
@@ -137,14 +140,15 @@ func NewID() string {
 }
 
 const runColumns = `id, kind, workspace, submitter, submitter_name, workload, name, state, reason, namespace,
-	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token`
+	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token,
+	content_cleared_at`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var r Run
 	var spec []byte
 	err := row.Scan(&r.ID, &r.Kind, &r.Workspace, &r.Submitter, &r.SubmitterName, &r.Workload, &r.Name, &r.State,
 		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched,
-		&r.LastActivityAt, &r.SessionToken)
+		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt)
 	if err != nil {
 		return r, err
 	}
@@ -283,6 +287,28 @@ func (s *Store) Finish(ctx context.Context, id string, st State, reason, logTail
 func (s *Store) RequestStop(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx, `UPDATE runs SET stop_requested = true WHERE id = $1 AND state IN ('pending', 'running')`, id)
 	return err
+}
+
+// ClearContent clears the content of every run that ended before `before` and isn't cleared yet:
+// its log tail and session bearer, and its statements' code, output and error. Their state and
+// timestamps stay. It returns how many runs it cleared.
+func (s *Store) ClearContent(ctx context.Context, before, at time.Time) (int, error) {
+	n := 0
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', content_cleared_at = $2
+			WHERE finished_at IS NOT NULL AND finished_at < $1 AND content_cleared_at IS NULL RETURNING id`, before, at)
+		if err != nil {
+			return err
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil || len(ids) == 0 {
+			return err
+		}
+		n = len(ids)
+		_, err = tx.Exec(ctx, `UPDATE statements SET code = '', output = NULL, error = '' WHERE run_id = ANY($1)`, ids)
+		return err
+	})
+	return n, err
 }
 
 // LogTail returns the driver log kept when the run ended.

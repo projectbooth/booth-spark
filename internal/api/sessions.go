@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -200,6 +201,10 @@ func (a Applications) deleteSession(w http.ResponseWriter, r *http.Request) {
 func (a Applications) sessionLogs(w http.ResponseWriter, r *http.Request) {
 	s, _, ok := a.loadSession(w, r)
 	if !ok {
+		return
+	}
+	if s.ContentClearedAt != nil {
+		apiError(w, http.StatusGone, "cleared", "the session's log was cleared "+s.ContentClearedAt.UTC().Format(time.RFC3339)+" (sessions.resultRetention)")
 		return
 	}
 	var text string

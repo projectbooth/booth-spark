@@ -52,6 +52,8 @@ type Config struct {
 	SessionIdleTimeout time.Duration
 	// SessionMaxLifetime stops a session after this long regardless (sessions.maxLifetime).
 	SessionMaxLifetime time.Duration
+	// SessionResultRetention is how long an ended run's content is kept (sessions.resultRetention).
+	SessionResultRetention time.Duration
 }
 
 // Runs configures the run controller (docs/design-v0.md items 3, 7 and 8).
@@ -134,8 +136,10 @@ func Load() (Config, error) {
 	}
 	for name, d := range map[string]*time.Duration{
 		"BOOTH_SESSION_IDLE_TIMEOUT": &cfg.SessionIdleTimeout, "BOOTH_SESSION_MAX_LIFETIME": &cfg.SessionMaxLifetime,
+		"BOOTH_SESSION_RESULT_RETENTION": &cfg.SessionResultRetention,
 	} {
-		def := map[string]string{"BOOTH_SESSION_IDLE_TIMEOUT": "20m", "BOOTH_SESSION_MAX_LIFETIME": "12h"}[name]
+		def := map[string]string{"BOOTH_SESSION_IDLE_TIMEOUT": "20m", "BOOTH_SESSION_MAX_LIFETIME": "12h",
+			"BOOTH_SESSION_RESULT_RETENTION": "168h"}[name]
 		v, err := time.ParseDuration(getEnv(name, def))
 		if err != nil || v < time.Second {
 			return Config{}, fmt.Errorf("%s must be a duration of at least 1s", name)

@@ -89,7 +89,7 @@ func run() error {
 			DriverCPU: rc.Driver.CPU, ExecutorCPU: rc.Executor.CPU, Egress: rc.Egress,
 		}}
 		ctrl := &runs.Controller{Store: store, Cluster: launcher, Interval: 3 * time.Second,
-			PendingTimeout: rc.PendingTimeoutD, LogTailBytes: 1 << 20, Now: time.Now}
+			PendingTimeout: rc.PendingTimeoutD, LogTailBytes: 1 << 20, ResultRetention: cfg.SessionResultRetention, Now: time.Now}
 		go ctrl.Run(ctx)
 		deps.Applications = &api.Applications{
 			Store: store,

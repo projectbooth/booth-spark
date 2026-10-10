@@ -82,6 +82,8 @@ spec:
               value: {{ .Values.sessions.idleTimeout | quote }}
             - name: BOOTH_SESSION_MAX_LIFETIME
               value: {{ .Values.sessions.maxLifetime | quote }}
+            - name: BOOTH_SESSION_RESULT_RETENTION
+              value: {{ .Values.sessions.resultRetention | quote }}
             - name: BOOTH_INSTANCE
               value: {{ include "booth-spark.instance" . | quote }}
             - name: BOOTH_NAMESPACE

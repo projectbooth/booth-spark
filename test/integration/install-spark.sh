@@ -26,7 +26,7 @@ helm upgrade --install "$release" "$repo/charts/booth-spark" --namespace booth-s
   --set runs.image="$spark_image" --set runs.imagePullPolicy=Never \
   --set runs.maxRunning=4 --set runs.maxRunningPerWorkspace=0 --set runs.memoryBudget=10Gi \
   --set runs.pendingTimeout=5m \
-  --set sessions.idleTimeout=60s --set sessions.maxLifetime=30m \
+  --set sessions.idleTimeout=60s --set sessions.maxLifetime=30m --set sessions.resultRetention=4m \
   --set 'runs.driver.nodeSelector.booth\.projectbooth\.io/pool=compute' \
   --set 'runs.executor.nodeSelector.booth\.projectbooth\.io/pool=compute' \
   "$@"

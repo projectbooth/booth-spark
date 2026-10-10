@@ -36,7 +36,10 @@ type Controller struct {
 	PendingTimeout time.Duration
 	// LogTailBytes is how much of the driver's log is kept when a run ends.
 	LogTailBytes int64
-	Now          func() time.Time
+	// ResultRetention is how long an ended run's content is kept (sessions.resultRetention); 0
+	// keeps it.
+	ResultRetention time.Duration
+	Now             func() time.Time
 }
 
 // Run passes until ctx is done.
@@ -48,6 +51,7 @@ func (c *Controller) Run(ctx context.Context) {
 		// The sweep lists namespaces cluster-wide; every tenth pass is plenty.
 		if i%10 == 0 {
 			c.Sweep(ctx)
+			c.Expire(ctx)
 		}
 		select {
 		case <-ctx.Done():
@@ -144,6 +148,22 @@ func (c *Controller) step(ctx context.Context, r Run) error {
 		return c.finish(ctx, r, Failed, reason)
 	}
 	return nil
+}
+
+// Expire clears the content of runs ended more than ResultRetention ago (ADR 0110, step 4 ruling 1).
+func (c *Controller) Expire(ctx context.Context) {
+	if c.ResultRetention <= 0 {
+		return
+	}
+	now := c.Now()
+	n, err := c.Store.ClearContent(ctx, now.Add(-c.ResultRetention), now)
+	if err != nil {
+		log.Printf("runs: expire: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("runs: expire: cleared the content of %d run(s) ended more than %s ago", n, c.ResultRetention)
+	}
 }
 
 // RunNamespace is one of this install's run namespaces: its run's id and when it was created.

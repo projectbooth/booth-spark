@@ -170,7 +170,7 @@ paths:
       tags: [applications]
       operationId: getApplicationLogs
       summary: The driver's log (its submitter, a workspace owner or a platform operator)
-      description: Live while the run is live; afterwards, the last 1 MiB kept when it ended.
+      description: Live while the run is live; afterwards, the last 1 MiB kept when it ended, until sessions.resultRetention after that (then 410 cleared).
       parameters:
         - $ref: "#/components/parameters/Workspace"
         - $ref: "#/components/parameters/RunID"
@@ -189,6 +189,7 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+        "410": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
   /sessions:
     get:
@@ -301,6 +302,7 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+        "410": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
   /sessions/{id}/statements:
     get:
@@ -408,7 +410,7 @@ components:
         code:
           type: string
           description: A stable machine-readable code
-          enum: [invalid, forbidden, not_found, unavailable, at_capacity, session_over, internal]
+          enum: [invalid, forbidden, not_found, unavailable, at_capacity, session_over, cleared, internal]
     Me:
       type: object
       required: [subject, workspace, role, operator, workload, canSubmit, submitMinRole]
@@ -497,6 +499,7 @@ components:
         createdAt: {type: string, format: date-time}
         startedAt: {type: string, format: date-time}
         finishedAt: {type: string, format: date-time}
+        contentClearedAt: {type: string, format: date-time, description: "When its content (log tail; a session's statement code, output and error) was cleared, sessions.resultRetention after it ended"}
         footprintMi: {type: integer, description: "The most memory the run's pods can use at once, MiB"}
         resources:
           type: object
@@ -563,6 +566,7 @@ components:
         createdAt: {type: string, format: date-time}
         startedAt: {type: string, format: date-time}
         finishedAt: {type: string, format: date-time}
+        contentClearedAt: {type: string, format: date-time, description: "When its content (log tail; a session's statement code, output and error) was cleared, sessions.resultRetention after it ended"}
         lastActivityAt: {type: string, format: date-time}
         footprintMi: {type: integer}
         idleTimeout: {type: string}

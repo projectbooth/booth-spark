@@ -133,9 +133,14 @@ runs:
 # idleTimeout is stopped and its namespace deleted (a statement still running counts as activity);
 # every session is stopped after maxLifetime. A caller may ask for less of either, never more.
 # Sessions count against runs.maxRunning and runs.memoryBudget like any run.
+#
+# resultRetention: once any run (a session or an application) has been ended this long, its content
+# is cleared: a session's statement code, output and error, and the driver log tail kept when it
+# ended. Its state and timestamps stay. Default 168h (7 days); a Go duration.
 sessions:
   idleTimeout: 20m
   maxLifetime: 12h
+  resultRetention: 168h
 
 # Run records live in this module's own database on the shared PostgreSQL cluster (ADR 0014).
 #

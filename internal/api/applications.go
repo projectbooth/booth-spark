@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -234,6 +235,10 @@ func (a Applications) logs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tail = n
+	}
+	if run.ContentClearedAt != nil {
+		apiError(w, http.StatusGone, "cleared", "the run's log was cleared "+run.ContentClearedAt.UTC().Format(time.RFC3339)+" (sessions.resultRetention)")
+		return
 	}
 	var text string
 	var err error
