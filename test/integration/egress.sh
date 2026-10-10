@@ -14,9 +14,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 image=$1
 spark_image=$2
 
-kc_pod=$(kubectl -n keycloak get pod -l app=keycloak -o jsonpath='{.items[0].status.podIP}')
+kc_pod=$(kubectl -n keycloak get pod "$(ready_pod keycloak app=keycloak)" -o jsonpath='{.status.podIP}')
 core_svc=$(kubectl -n booth-system get svc booth-core -o jsonpath='{.spec.clusterIP}')
-core_pod=$(kubectl -n booth-system get pod -l app.kubernetes.io/name=booth-core -o jsonpath='{.items[0].status.podIP}')
+core_pod=$(kubectl -n booth-system get pod "$(ready_pod booth-system app.kubernetes.io/name=booth-core)" -o jsonpath='{.status.podIP}')
 node_ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
 echo "targets: keycloak pod $kc_pod, booth-core Service $core_svc, booth-core pod $core_pod, node $node_ip"
 targets=$(python3 -c "import json,sys; k,s,p,n=sys.argv[1:]; print(json.dumps({'targets': {

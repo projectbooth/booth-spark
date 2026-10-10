@@ -145,7 +145,7 @@ checked identity "PW='$password'; MINT_CRED='$mint_cred'; MINT_URL='$mint_url'
 $script"
 
 step "the backend logged its effective issuers once: keys from oidc.jwksUrl, workload issuer trusted"
-logs=$(kubectl -n "$ns" logs deployment/booth-spark)
+logs=$(kubectl -n "$ns" logs "pod/$(ready_pod "$ns" app.kubernetes.io/name=booth-spark)")
 echo "$logs" | grep 'oidc: verifying tokens' || fail "no oidc log line"
 test "$(echo "$logs" | grep -c 'oidc: verifying tokens')" = 1 || fail "the verifier was built more than once"
 echo "$logs" | grep -q 'keys-from=http://keycloak.keycloak.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs' || fail "keys did not come from oidc.jwksUrl"

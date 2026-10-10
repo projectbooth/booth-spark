@@ -16,7 +16,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 T_editor=$(tok editor-user)
 T_owner=$(tok owner-user)
-image=$(kubectl -n booth-spark get deploy -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="BOOTH_RUNS")].value}' | jq_ "d['image']")
+image=$(kubectl -n booth-spark get deploy booth-spark -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BOOTH_RUNS")].value}' | jq_ "d['image']")
 backend=system:serviceaccount:booth-spark:booth-spark
 results_ok=1
 expect() { # DESCRIPTION ACTUAL PATTERN
