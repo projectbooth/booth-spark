@@ -102,11 +102,14 @@ session() {
 
 # ns_gone NS: waits until the namespace no longer exists.
 ns_gone() {
+  local out=""
   for _ in $(seq 1 180); do
-    kubectl get namespace "$1" >/dev/null 2>&1 || return 0
+    # Gone means the API server's NotFound, not any failure of kubectl (an unreachable API
+    # server would otherwise pass for a deleted namespace).
+    out=$(kubectl get namespace "$1" -o name 2>&1) || { echo "$out" | grep -q '(NotFound)' && return 0; }
     sleep 1
   done
-  fail "namespace $1 still exists"
+  fail "namespace $1 still exists: $out"
 }
 
 # --- sessions (build step 4) ---

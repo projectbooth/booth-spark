@@ -5,7 +5,9 @@
 #     destination other than the allowed ones is not: another namespace's pod, a Service ClusterIP
 #     (the Service CIDR), booth-core's pod (the pod CIDR), the node's kubelet;
 #   - runs.egress.mode=closed: the internet is not reachable either.
-# Controls in both: DNS resolves, the Kubernetes API answers, the run's own driver port is open.
+# Controls in both: DNS resolves, the Kubernetes API answers, the run's own driver port is open;
+# and once, from the probe namespace (outside every run), every blocked target answers. Every
+# refusal is a drop (closed:TimeoutError), never "refused" or "unreachable".
 # Needs a CNI that enforces egress NetworkPolicy (the real-core job's Calico; kindnet doesn't).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,6 +25,16 @@ targets=$(python3 -c "import json,sys; k,s,p,n=sys.argv[1:]; print(json.dumps({'
   'the internet (1.1.1.1:443)': ['1.1.1.1', 443], 'the internet by name (example.com:443)': ['example.com', 443],
   \"another namespace's pod (keycloak)\": [k, 8080], 'a Service ClusterIP (booth-core)': [s, 8080],
   'the pod CIDR (booth-core pod)': [p, 8080], \"the node's kubelet\": [n, 10250]}}))" "$kc_pod" "$core_svc" "$core_pod" "$node_ip")
+# Positive control for every target the runs must not reach: from the probe namespace (no run
+# policies), each one answers, so a run's timeout is its policy's drop, not a dead or wrong target.
+out=$(checked egress-targets "connected() { [ \"\$(status -k --max-time 5 \"\$1\")\" != 000 ] && echo connected || echo 'no answer'; }
+check \"control: keycloak's pod answers from outside a run\" \"\$(status --max-time 5 http://$kc_pod:8080/realms/booth)\" 200
+check \"control: booth-core's Service answers from outside a run\" \"\$(status --max-time 5 http://$core_svc:8080/healthz)\" 200
+check \"control: booth-core's pod answers from outside a run\" \"\$(status --max-time 5 http://$core_pod:8080/healthz)\" 200
+check \"control: the node's kubelet answers from outside a run\" \"\$(connected https://$node_ip:10250/healthz)\" connected
+check \"control: the internet answers from outside a run\" \"\$(connected https://1.1.1.1/)\" connected")
+echo "$out"
+
 ok=1
 expect() { if echo "$2" | grep -Eq "$3"; then echo "ok: $1 ($2)"; else echo "FAIL: $1: got '$2', want /$3/"; ok=0; fi; }
 
