@@ -657,11 +657,14 @@ didn't cover are marked (decision); the open questions are listed last, and in t
   - idle expiry and maximum lifetime;
   - module uninstall: the namespace's owner reference to the driver ClusterRole;
   - a backend restart: re-adoption from the database, and the sweep that reaps a run namespace with
-    no live run behind it.
+    no live run behind it once the namespace is a minute old. A younger one may still be in use:
+    main's Integration after #5 saw the sweep delete `isolation.sh`'s fence-control namespace a
+    second after it was created.
 - **Integration** proves it against a real core, a real cluster and Calico (`sessions.sh`):
   - statements, a failure, visibility;
   - idle shutdown, with a statement running past the 60s test timeout keeping the session alive;
-  - the maximum lifetime, delete, a backend restart mid-statement, and an orphan reaped.
+  - the maximum lifetime, delete, a backend restart mid-statement, and an orphan (spared by a sweep while
+    under a minute old, then reaped).
 
   `isolation.sh` adds two session cases: a session as the probed target (its RPC, UI and runner
   ports dropped), and the probe run as a session statement. `egress.sh` repeats both modes from a

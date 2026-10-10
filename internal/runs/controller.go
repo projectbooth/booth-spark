@@ -178,7 +178,11 @@ func (c *Controller) Sweep(ctx context.Context) {
 	}
 	now := c.Now()
 	for ns, rn := range nss {
-		if keep[ns] || now.Sub(rn.Created) < SweepGrace {
+		if keep[ns] {
+			continue
+		}
+		if age := now.Sub(rn.Created); age < SweepGrace {
+			log.Printf("runs: sweep: sparing %s (run %s is not live, but the namespace is only %s old)", ns, rn.Run, age.Round(time.Second))
 			continue
 		}
 		log.Printf("runs: sweep: deleting %s (run %s is not live)", ns, rn.Run)

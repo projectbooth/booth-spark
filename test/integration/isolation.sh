@@ -37,11 +37,14 @@ isolation_checks() {
   local who=$1 r=$2
   pr() { echo "$r" | python3 -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"; }
   expect "control: $who lists pods in its own namespace" "$(pr 'control: list pods in its own namespace')" '^200$'
-  expect "$who can't list B's pods" "$(pr "list pods in run B's namespace")" '^403$'
-  expect "$who can't read B's Secrets (its runner bearer among them)" "$(pr "read run B's Secrets")" '^403$'
-  expect "$who can't read B's namespace" "$(pr "read run B's namespace")" '^403$'
-  expect "$who can't read Secrets even in its own namespace" "$(pr 'read Secrets in its own namespace')" '^403$'
-  expect "$who can't create a pod in B's namespace" "$(pr "create a pod in run B's namespace")" '^403$'
+  # RBAC's refusal, by its message: a 403 for any other reason (a policy, a terminating namespace)
+  # would not show what is being tested.
+  local no='^403 .* is forbidden: User "system:serviceaccount:[^"]+:driver" cannot'
+  expect "$who can't list B's pods" "$(pr "list pods in run B's namespace")" "$no list resource \"pods\""
+  expect "$who can't read B's Secrets (its runner bearer among them)" "$(pr "read run B's Secrets")" "$no list resource \"secrets\""
+  expect "$who can't read B's namespace" "$(pr "read run B's namespace")" "$no get resource \"namespaces\""
+  expect "$who can't read Secrets even in its own namespace" "$(pr 'read Secrets in its own namespace')" "$no list resource \"secrets\""
+  expect "$who can't create a pod in B's namespace" "$(pr "create a pod in run B's namespace")" "$no create resource \"pods\""
   expect "control: $who reaches its own driver port" "$(pr 'control: its own driver port through its Service')" '^open$'
   expect "$who can't reach B's driver RPC port (dropped, not refused)" "$(pr "run B's driver RPC port")" '^closed:TimeoutError$'
   expect "$who can't reach B's driver UI port (dropped, not refused)" "$(pr "run B's driver UI port")" '^closed:TimeoutError$'
@@ -98,29 +101,31 @@ metadata:
   ownerReferences: [{apiVersion: rbac.authorization.k8s.io/v1, kind: ClusterRole, name: booth-spark-driver, uid: $uid}]
 EOF
 }
-expect "control: the backend creates a run-shaped namespace" "$(runns bspark-fencectl | as create -f -)" 'created'
+expect "control: the backend creates a run-shaped namespace" "$(runns bspark-fencectl | as create -f -)" '^namespace/bspark-fencectl created$'
 expect "the backend can't create a namespace outside its prefix" "$(runns kube-evil | as create -f -)" 'denied request: booth-spark may create only its own'
 expect "the backend can't create a namespace for another install" "$(runns bspark-other other.install | as create -f -)" 'denied request: booth-spark may create only its own'
-expect "the backend can't create an unlabelled namespace" "$(printf 'apiVersion: v1\nkind: Namespace\nmetadata: {name: bspark-bare}\n' | as create -f -)" 'denied request'
-expect "the backend can't label a namespace it didn't create" "$(as label namespace kube-system evil=1)" 'forbidden'
-expect "the backend can't label its own namespace either (no update)" "$(as label namespace bspark-fencectl evil=1)" 'forbidden'
+expect "the backend can't create an unlabelled namespace" "$(printf 'apiVersion: v1\nkind: Namespace\nmetadata: {name: bspark-bare}\n' | as create -f -)" 'denied request: booth-spark may create only its own'
+expect "the backend can't label a namespace it didn't create" "$(as label namespace kube-system evil=1)" 'cannot patch resource "namespaces"'
+expect "the backend can't label its own namespace either (no update)" "$(as label namespace bspark-fencectl evil=1)" 'cannot patch resource "namespaces"'
 kubectl create namespace booth-spark-it-notmine --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 expect "the backend can't delete a namespace it didn't create" "$(as delete namespace booth-spark-it-notmine --wait=false)" 'denied request: booth-spark may delete only'
 rb() { # NAMESPACE ROLE SUBJECT-NS SUBJECT
   printf 'apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata: {name: probe, namespace: %s}\nroleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: %s}\nsubjects: [{kind: ServiceAccount, name: %s, namespace: %s}]\n' "$1" "$2" "$4" "$3"
 }
-expect "control: the backend binds the driver role in its own namespace" "$(rb bspark-fencectl booth-spark-driver bspark-fencectl driver | as create -f -)" 'created'
-expect "the backend can't create a RoleBinding in kube-system" "$(rb kube-system booth-spark-driver kube-system driver | as create -f -)" 'denied request'
-expect "the backend can't bind cluster-admin, even in its own namespace" "$(rb bspark-fencectl cluster-admin bspark-fencectl x | as create -f -)" '(denied request|escalat|not currently held)'
-expect "the backend can't bind the driver role to another account" "$(rb bspark-fencectl booth-spark-driver kube-system default | as create -f -)" 'denied request'
+expect "control: the backend binds the driver role in its own namespace" "$(rb bspark-fencectl booth-spark-driver bspark-fencectl driver | as create -f -)" '^rolebinding.rbac.authorization.k8s.io/probe created$'
+expect "the backend can't create a RoleBinding in kube-system" "$(rb kube-system booth-spark-driver kube-system driver | as create -f -)" 'denied request: booth-spark may create RoleBindings only'
+expect "the backend can't bind cluster-admin, even in its own namespace" "$(rb bspark-fencectl cluster-admin bspark-fencectl x | as create -f -)" '(denied request: booth-spark may create RoleBindings only|attempting to grant RBAC permissions not currently held|cannot bind)'
+expect "the backend can't bind the driver role to another account" "$(rb bspark-fencectl booth-spark-driver kube-system default | as create -f -)" 'denied request: booth-spark may create RoleBindings only'
+expect "control: the backend can create namespaces (the fence, not RBAC, narrows that)" "$(kubectl auth can-i create namespaces --as="$backend" 2>&1)" '^yes'
 for v in "get secrets -A" "list pods -A" "get pods --subresource=log -n kube-system" "create pods -n kube-system" \
          "create deployments.apps -n kube-system" "update namespaces" "patch namespaces" "create clusterrolebindings"; do
   expect "the backend can't $v" "$(kubectl auth can-i $v --as="$backend" 2>&1)" '^no'
 done
-expect "control: the backend deletes its own namespace" "$(as delete namespace bspark-fencectl --wait=false)" 'deleted'
+expect "control: the backend deletes its own namespace" "$(as delete namespace bspark-fencectl --wait=false)" '^namespace "bspark-fencectl" deleted$'
 kubectl delete namespace booth-spark-it-notmine --wait=false >/dev/null
 
 step "the executor account has no permissions (and run B's driver only its own namespace's pods)"
+expect "control: the executor account authenticates (any account may review itself)" "$(kubectl auth can-i create selfsubjectaccessreviews.authorization.k8s.io --as="system:serviceaccount:bspark-$b:executor" 2>&1)" '^yes'
 for v in "list pods" "get configmaps" "create pods" "get secrets"; do
   expect "executor can't $v" "$(kubectl auth can-i $v -n "bspark-$b" --as="system:serviceaccount:bspark-$b:executor")" '^no'
 done
