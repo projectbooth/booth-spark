@@ -40,7 +40,9 @@ def tcp(host, port, timeout=4):
     closed:TimeoutError; closed:ConnectionRefusedError means the path is open and nothing listens,
     which is why every target the checks expect to be blocked has something listening on it."""
     try:
-        socket.create_connection((host, port), timeout=timeout).close()
+        # IPv4 only: the run namespaces' rules are IPv4 (there is no IPv6 internet rule), and a
+        # name with IPv6 addresses would otherwise end on "unreachable" instead of the policy's drop.
+        socket.create_connection((socket.gethostbyname(host), port), timeout=timeout).close()
         return "open"
     except Exception as e:  # noqa: BLE001
         return "closed:" + type(e).__name__
