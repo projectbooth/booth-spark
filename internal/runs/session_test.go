@@ -46,7 +46,7 @@ func TestValidateSession(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := ValidateSession(SessionSpec{Name: "s", DataAccess: json.RawMessage(`{"database":true}`)}, l); !errors.As(err, new(Unavailable)) {
+	if _, err := ValidateSession(SessionSpec{Name: "s", DataAccess: &DataAccess{Database: true}}, l); !errors.As(err, new(Unavailable)) {
 		t.Errorf("data access: %v", err)
 	}
 }

@@ -4,7 +4,8 @@ Integration's isolation tests exercise every rule, each with a request that must
 
 1. "<fullname>-run-pods": every pod created or updated in one of this install's run namespaces
    (selected by the namespace label only the backend sets, through policy 2) must
-     - use only allowlisted images (runs.image);
+     - use only allowlisted images (runs.image; with data access, also this backend's image, the
+       runs' agent, and dataAccess.sidecar.image);
      - carry its namespace's workspace label (ADR 0077);
      - carry the configured nodeSelector of its kind (runs.driver / runs.executor, item 8);
      - run as "executor" with no token mounted, unless it is the driver, which only the backend
@@ -19,6 +20,11 @@ Integration's isolation tests exercise every rule, each with a request that must
 {{- $instance := include "booth-spark.instance" . }}
 {{- $backend := printf "system:serviceaccount:%s:%s" .Release.Namespace (include "booth-spark.serviceAccountName" .) }}
 {{- $images := list .Values.runs.image }}
+{{- if .Values.dataAccess.enabled }}
+{{- /* A data run's pods also run its agent (this backend's image) and booth-core's credential sidecar. */}}
+{{- $images = append $images (include "booth-spark.image" .) }}
+{{- $images = append $images .Values.dataAccess.sidecar.image }}
+{{- end }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:

@@ -14,7 +14,9 @@
 # labels the node), sized for a CI runner. BOOTH_SPARK_RELEASE (default booth-spark) names the
 # release; uninstall.sh reinstalls as "spark", the name booth-core's module uninstall uses.
 #
-#   test/integration/deploy-realcore.sh <booth-core checkout> <core image> <booth-spark image> <Spark image>
+#   test/integration/deploy-realcore.sh <booth-core checkout> <core image> <booth-spark image> <Spark image> [helm args...]
+#
+# Extra helm arguments go to booth-spark's install (the data job turns data access on with them).
 #
 # All images must already be loaded into the cluster (pullPolicy Never). The test password is
 # generated per run and kept in the Secret keycloak/realcore-test-password for identity.sh.
@@ -24,6 +26,7 @@ core_dir=$1
 core_image=$2
 image=$3
 spark_image=$4
+shift 4
 ns=booth-spark
 issuer=http://keycloak.keycloak.svc:8080/realms/booth
 jwks=http://keycloak.keycloak.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs
@@ -66,6 +69,6 @@ echo "--- booth-spark with chart defaults (database from core) and every identit
 kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
 # No --wait on purpose: the pod cannot start until core has written booth-database-credentials,
 # which it does only after it sees the BoothModule this install creates. verify.sh waits for that.
-bash "$repo/test/integration/install-spark.sh" "$image" "$spark_image"
+bash "$repo/test/integration/install-spark.sh" "$image" "$spark_image" "$@"
 
 kubectl -n keycloak rollout status deploy/keycloak --timeout=600s

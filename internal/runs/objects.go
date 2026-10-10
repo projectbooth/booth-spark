@@ -28,6 +28,10 @@ const (
 
 	NamespacePrefix = "bspark-"
 
+	// DatabaseClientLabel is booth-database's (and booth-core's) label for a namespace whose pods
+	// connect to the workspace database.
+	DatabaseClientLabel = "booth.projectbooth.io/database-client"
+
 	// Names inside a run's namespace.
 	DriverAccount     = "driver"
 	ExecutorAccount   = "executor"
@@ -90,6 +94,8 @@ type Cluster struct {
 	Driver, Executor         Placement
 	DriverCPU, ExecutorCPU   CPU
 	Egress                   Egress
+	// Data is the install's data access (nil: this install offers none).
+	Data *DataCluster
 }
 
 // APIEndpoint is one address of the Kubernetes API server, as the "kubernetes" EndpointSlice in
@@ -113,6 +119,8 @@ type Objects struct {
 	AppConfigMap      *corev1.ConfigMap
 	// SessionSecret holds a session's runner bearer (nil for an application).
 	SessionSecret *corev1.Secret
+	// DataSecret holds the run's data bearer, for its agents (nil without data access).
+	DataSecret    *corev1.Secret
 	DriverService *corev1.Service
 	DriverPod     *corev1.Pod
 }
@@ -159,6 +167,11 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 			Name: c.DriverClusterRole, UID: c.DriverClusterRoleUID,
 		}},
 	}}
+	if r.Data != nil && r.Data.Database != "" {
+		// booth-database's Postgres admits only namespaces carrying this label (its ingress policy,
+		// beneath credential auth); core sets it on module namespaces, and a run's is the module's own.
+		o.Namespace.Labels[DatabaseClientLabel] = "true"
+	}
 	o.ControllerBinding = &rbacv1.RoleBinding{
 		ObjectMeta: meta(ControllerBinding),
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: c.RunControllerClusterRole},
@@ -172,10 +185,19 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: DriverAccount, Namespace: ns}},
 	}
 
-	driverMi := PodMemoryMi(v.DriverHeapMi)
-	execMi := PodMemoryMi(v.ExecutorHeapMi)
+	if r.Data != nil && (c.Data == nil || r.DataBearer == "") {
+		return Objects{}, fmt.Errorf("run %s has data access but this install has none, or the run has no data bearer", r.ID)
+	}
+	// Every pod of a data run also holds its agent and credential sidecars.
+	driverMi := PodMemoryMi(v.DriverHeapMi) + v.SidecarMi()
+	execMi := PodMemoryMi(v.ExecutorHeapMi) + v.SidecarMi()
 	driverLimit := resource.MustParse(c.DriverCPU.Limit)
 	execLimit := resource.MustParse(c.ExecutorCPU.Limit)
+	if r.Data != nil {
+		side := resource.MustParse(strconv.Itoa(50+100*(len(r.Data.locations())+boolInt(r.Data.Database != ""))) + "m")
+		driverLimit.Add(side)
+		execLimit.Add(side)
+	}
 	cpuLimits := driverLimit.DeepCopy()
 	for i := 0; i < v.MaxExecutors; i++ {
 		cpuLimits.Add(execLimit)
@@ -197,8 +219,13 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 		DefaultRequest: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
 	}}}}
 	o.NetworkPolicies = networkPolicies(ns, c, api, with(nil))
+	if r.Data != nil {
+		o.NetworkPolicies = append(o.NetworkPolicies, dataNetworkPolicies(ns, r, *c.Data, c, with(nil))...)
+		o.DataSecret = &corev1.Secret{ObjectMeta: meta(DataSecret), Type: corev1.SecretTypeOpaque,
+			StringData: map[string]string{dataBearerKey: r.DataBearer}}
+	}
 
-	tmpl, err := executorTemplate(c, executorLabels)
+	tmpl, err := executorTemplate(r, c, executorLabels)
 	if err != nil {
 		return Objects{}, err
 	}
@@ -261,7 +288,7 @@ func scratchVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 // executorTemplate is Spark's executor pod template (spark.kubernetes.executor.podTemplateFile):
 // the executor account with no token, the run's labels, the executor placement, and the same
 // hardening as the driver. Spark fills in the container's image, command, resources and env.
-func executorTemplate(c Cluster, labels map[string]string) (string, error) {
+func executorTemplate(r Run, c Cluster, labels map[string]string) (string, error) {
 	vols, mounts := scratchVolumes()
 	sc := restrictedContainer()
 	pod := corev1.Pod{
@@ -277,6 +304,9 @@ func executorTemplate(c Cluster, labels map[string]string) (string, error) {
 			Volumes:                      vols,
 			Containers:                   []corev1.Container{{Name: "executor", SecurityContext: sc, VolumeMounts: mounts}},
 		},
+	}
+	if r.Data != nil {
+		dataPod(r, *c.Data, false).apply(&pod.Spec, "executor")
 	}
 	out, err := yaml.Marshal(pod)
 	return string(out), err
@@ -339,6 +369,11 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 	for k, val := range sparkconf.UIConf() {
 		conf[k] = val
 	}
+	if r.Data != nil && c.Data != nil {
+		for k, val := range DataConf(r, *c.Data) {
+			conf[k] = val
+		}
+	}
 	for k, val := range v.Conf {
 		if AllowedConf[k] {
 			conf[k] = val
@@ -350,9 +385,15 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		"--name", r.ID,
 	}
 	args = append(args, sparkconf.Args(conf)...)
-	args = append(args, runMountPath+"/"+mainKey)
-	if r.Kind == "session" {
-		return args
+	switch {
+	case r.Kind == "session":
+		return append(args, runMountPath+"/"+mainKey)
+	case v.Main.Jar != nil:
+		args = append(args, "--class", v.Main.MainClass, MainFileName(v))
+	case v.Main.Python != nil:
+		args = append(args, MainFileName(v))
+	default:
+		args = append(args, runMountPath+"/"+mainKey)
 	}
 	return append(args, v.Args...)
 }
@@ -382,8 +423,9 @@ func driverPod(r Run, c Cluster, api APIEndpoint, labels map[string]string, memM
 	for k, val := range sparkconf.UIEnv(r.ID) {
 		env = append(env, corev1.EnvVar{Name: k, Value: val})
 	}
-	mem := resource.MustParse(strconv.Itoa(memMi) + "Mi")
-	return &corev1.Pod{
+	// The Spark container's own memory: the pod's less what its data sidecars take.
+	mem := resource.MustParse(strconv.Itoa(memMi-r.Spec.SidecarMi()) + "Mi")
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: DriverPod, Namespace: r.Namespace, Labels: labels},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: DriverAccount,
@@ -413,6 +455,17 @@ func driverPod(r Run, c Cluster, api APIEndpoint, labels map[string]string, memM
 			}},
 		},
 	}
+	if r.Data != nil && c.Data != nil {
+		dataPod(r, *c.Data, r.Spec.MainFile() != nil).apply(&pod.Spec, "driver")
+	}
+	return pod
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // networkPolicies fence a run's namespace (docs/design-v0.md item 3; ADR 0110 egress ruling):

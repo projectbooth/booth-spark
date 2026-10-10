@@ -25,6 +25,18 @@ type cluster interface {
 	RunnerResult(ctx context.Context, ns, token, id string) (RunnerResult, error)
 }
 
+// Data is the controller's view of data access (internal/dataaccess implements it): resolve a
+// run's access before its launch, and re-check it while the run lives. Every refusal wraps
+// ErrDataRefused; any other error is an outage, retried on the next pass.
+type Data interface {
+	// Prepare mints the run's first token and resolves every location it asked for.
+	Prepare(ctx context.Context, r Run) (DataPlan, error)
+	// Check keeps the run's token current; a refusal (the submitter lost access) ends the run.
+	Check(ctx context.Context, r Run) error
+	// Forget drops what is held for an ended run.
+	Forget(id string)
+}
+
 // Controller converges live runs to their namespaces (docs/design-v0.md items 1 and 7). The
 // database is the source of truth; every pass reads it, so a backend restart loses nothing.
 type Controller struct {
@@ -36,7 +48,12 @@ type Controller struct {
 	PendingTimeout time.Duration
 	// LogTailBytes is how much of the driver's log is kept when a run ends.
 	LogTailBytes int64
-	Now          func() time.Time
+	// ResultRetention is how long an ended run's content is kept (sessions.resultRetention); 0
+	// keeps it.
+	ResultRetention time.Duration
+	// Data resolves and keeps data access; nil: a run that needs data access fails to start.
+	Data Data
+	Now  func() time.Time
 }
 
 // Run passes until ctx is done.
@@ -48,6 +65,7 @@ func (c *Controller) Run(ctx context.Context) {
 		// The sweep lists namespaces cluster-wide; every tenth pass is plenty.
 		if i%10 == 0 {
 			c.Sweep(ctx)
+			c.Expire(ctx)
 		}
 		select {
 		case <-ctx.Done():
@@ -82,6 +100,9 @@ func (c *Controller) finish(ctx context.Context, r Run, st State, reason string)
 	if err := c.Store.Finish(ctx, r.ID, st, reason, tail, c.Now()); err != nil {
 		return err
 	}
+	if c.Data != nil {
+		c.Data.Forget(r.ID)
+	}
 	log.Printf("runs: %s %s: %s", r.ID, st, reason)
 	// The namespace goes with the run: its pods, its token, its quota, everything.
 	return c.Cluster.Delete(ctx, r.Namespace)
@@ -93,10 +114,39 @@ func (c *Controller) step(ctx context.Context, r Run) error {
 		return c.finish(ctx, r, Stopped, "stopped on request")
 	}
 	if !r.Launched {
+		if r.Spec.NeedsData() && r.Data == nil {
+			if c.Data == nil {
+				return c.finish(ctx, r, Failed, "could not start: this install offers no data access")
+			}
+			plan, err := c.Data.Prepare(ctx, r)
+			switch {
+			case errors.Is(err, ErrDataRefused):
+				return c.finish(ctx, r, Failed, "could not start: "+err.Error())
+			case err != nil:
+				if now.Sub(r.CreatedAt) > c.PendingTimeout {
+					return c.finish(ctx, r, Failed, "could not start: resolving its data access: "+err.Error())
+				}
+				return fmt.Errorf("resolving data access (will retry): %w", err)
+			}
+			if err := c.Store.SetDataPlan(ctx, r.ID, plan); err != nil {
+				return err
+			}
+			r.Data = &plan
+		}
 		if err := c.Cluster.Launch(ctx, r); err != nil {
 			return c.finish(ctx, r, Failed, "could not start: "+err.Error())
 		}
 		return c.Store.MarkLaunched(ctx, r.ID)
+	}
+	if r.Data != nil && c.Data != nil {
+		// The submitter must keep their access for as long as the run lives (docs/design-v0.md
+		// item 4): a refused re-mint ends the run, and deleting its namespace ends every
+		// connection and lease use in it.
+		if err := c.Data.Check(ctx, r); errors.Is(err, ErrDataRefused) {
+			return c.finish(ctx, r, Failed, "lost its data access: "+err.Error())
+		} else if err != nil {
+			log.Printf("runs: %s: renewing data access (will retry): %v", r.ID, err)
+		}
 	}
 	since := r.CreatedAt
 	if r.StartedAt != nil {
@@ -144,6 +194,22 @@ func (c *Controller) step(ctx context.Context, r Run) error {
 		return c.finish(ctx, r, Failed, reason)
 	}
 	return nil
+}
+
+// Expire clears the content of runs ended more than ResultRetention ago (ADR 0110, step 4 ruling 1).
+func (c *Controller) Expire(ctx context.Context) {
+	if c.ResultRetention <= 0 {
+		return
+	}
+	now := c.Now()
+	n, err := c.Store.ClearContent(ctx, now.Add(-c.ResultRetention), now)
+	if err != nil {
+		log.Printf("runs: expire: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("runs: expire: cleared the content of %d run(s) ended more than %s ago", n, c.ResultRetention)
+	}
 }
 
 // RunNamespace is one of this install's run namespaces: its run's id and when it was created.

@@ -30,7 +30,12 @@ test "$(bm '{.spec.uiIntegrationMode}')" = "iframe-proxy" || fail "uiIntegration
 test "$(bm '{.spec.navGroup}')" = "manage" || fail "navGroup"
 test "$(bm '{.spec.navPath}')" = "/spark" || fail "navPath"
 test "$(bm '{.spec.healthCheckPath}')" = "/healthz" || fail "healthCheckPath"
-test -z "$(bm '{.spec.workloadIdentity}')" || fail "workloadIdentity declared before data access exists"
+# Minting is declared exactly when data access is on (DATA_ACCESS=1, the data job).
+if [ "${DATA_ACCESS:-}" = "1" ]; then
+  test "$(bm '{.spec.workloadIdentity.mint}')" = "true" || fail "workloadIdentity.mint not declared with data access on"
+else
+  test -z "$(bm '{.spec.workloadIdentity}')" || fail "workloadIdentity declared with data access off"
+fi
 if [ "${REAL_CORE:-}" = "1" ]; then
   test "$(bm '{.spec.database.enabled}')" = "true" || fail "database.enabled was pruned or wrong"
 fi

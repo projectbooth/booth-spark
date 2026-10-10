@@ -12,9 +12,25 @@ boothmodule.yaml, so it runs on every install, upgrade and template.
 {{- if not (has .Values.submit.minRole (list "editor" "owner")) -}}
 {{- fail (printf "submit.minRole must be \"editor\" or \"owner\" (viewers never submit, ADR 0110), not %q" .Values.submit.minRole) -}}
 {{- end -}}
+{{- if and .Values.dataAccess.enabled (contains "apache/spark" .Values.runs.image) -}}
+{{- fail "dataAccess.enabled needs runs.image to be booth-spark's runtime image (images/spark-runtime), which adds the JDBC driver, Iceberg, S3A and the module's credential helpers to Spark; plain apache/spark has none of them" -}}
+{{- end -}}
+{{- if and .Values.dataAccess.enabled (not (contains "@sha256:" .Values.dataAccess.sidecar.image)) -}}
+{{- fail "dataAccess.sidecar.image must be pinned by digest" -}}
+{{- end -}}
 {{- if and .Values.oidc.issuerUrl (not .Values.oidc.clientId) -}}
 {{- fail "oidc.clientId is required when oidc.issuerUrl is set" -}}
 {{- end -}}
+{{- end -}}
+
+{{/* The backend's own image, which is also each data run's agent. */}}
+{{- define "booth-spark.image" -}}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+
+{{/* The backend's internal port (data access). */}}
+{{- define "booth-spark.internalUrl" -}}
+{{- printf "http://%s.%s.svc:8081" (include "booth-spark.fullname" .) .Release.Namespace -}}
 {{- end -}}
 
 {{/* The Secret holding the database connection string (see values.yaml `postgres`). */}}

@@ -163,7 +163,7 @@ func TestManifest_DeclaresNothingItDoesNotUse(t *testing.T) {
 		t.Errorf("spec.events = %v; booth-spark uses no event bus", m.Spec.Events)
 	}
 	if m.Spec.WorkloadIdentity != nil {
-		t.Errorf("spec.workloadIdentity = %v; minting arrives with data access (step 5)", m.Spec.WorkloadIdentity)
+		t.Errorf("spec.workloadIdentity = %v; minting is declared only with dataAccess.enabled", m.Spec.WorkloadIdentity)
 	}
 	if m.Spec.PublicRoutes != nil {
 		t.Errorf("spec.publicRoutes = %v; no unauthenticated route is exposed (ADR 0110)", m.Spec.PublicRoutes)
@@ -370,20 +370,38 @@ func TestChart_Placement(t *testing.T) {
 	}
 }
 
-// docs/design-v0.md item 1: every base image is pinned by digest, never by tag alone.
+// docs/design-v0.md item 1: every base image is pinned by digest, never by tag alone, in the
+// backend's Dockerfile and the Spark runtime image's (a FROM naming an earlier stage is that stage).
 func TestDockerfile_BaseImagesPinnedByDigest(t *testing.T) {
-	df, err := os.ReadFile(repoFile("Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
+	for _, f := range []string{repoFile("Dockerfile"), repoFile("images", "spark-runtime", "Dockerfile")} {
+		df, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		from := regexp.MustCompile(`(?m)^FROM\s+(\S+)(?:\s+AS\s+(\S+))?`)
+		matches := from.FindAllStringSubmatch(string(df), -1)
+		if len(matches) == 0 {
+			t.Fatalf("no FROM lines in %s", f)
+		}
+		stages := map[string]bool{}
+		for _, m := range matches {
+			if !stages[m[1]] && !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(m[1]) {
+				t.Errorf("%s: FROM %s is not pinned by digest", f, m[1])
+			}
+			if m[2] != "" {
+				stages[m[2]] = true
+			}
+		}
 	}
-	from := regexp.MustCompile(`(?m)^FROM\s+(\S+)`)
-	matches := from.FindAllStringSubmatch(string(df), -1)
-	if len(matches) == 0 {
-		t.Fatal("no FROM lines in the Dockerfile")
+	// Every jar the runtime image adds is checked by its SHA-256.
+	df, _ := os.ReadFile(repoFile("images", "spark-runtime", "Dockerfile"))
+	adds := regexp.MustCompile(`(?m)^ADD\s+(.*)$`).FindAllStringSubmatch(string(df), -1)
+	if len(adds) != 4 {
+		t.Errorf("%d ADD lines, want the 4 jars", len(adds))
 	}
-	for _, m := range matches {
-		if !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(m[1]) {
-			t.Errorf("FROM %s is not pinned by digest", m[1])
+	for _, a := range adds {
+		if !regexp.MustCompile(`^--checksum=sha256:[0-9a-f]{64} `).MatchString(a[1]) {
+			t.Errorf("ADD %s has no SHA-256", a[1])
 		}
 	}
 }

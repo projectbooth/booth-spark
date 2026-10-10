@@ -686,3 +686,114 @@ Open questions, for the coordinator (in the PR too):
 3. **No statement cancel.** A runaway statement holds the session until its lifetime ends or the
    session is deleted. A cancel endpoint (Spark's `cancelJobGroup`, which the runner already sets up)
    is a small addition if wanted.
+
+Ruled 2026-10-10 (ADR 0110, "Addendum: step 4 rulings"): results kept for `sessions.resultRetention`
+(built first in step 5, below); operators stay excluded; no cancel in v0. Both limits are in
+`docs/operations.md`.
+
+## As built: step 5 (data access), 2026-10-10
+
+Built as item 4 describes: one workload token per run, minted by the backend (subject
+`spark:<workspace>:<runId>`, owner the submitter, roleCeiling editor) and re-minted at two thirds of
+its life; an agent in every pod; the credential sidecars; Iceberg and S3A through the backend's
+internal port. Each difference below is deliberate and covered by a test. The decisions the note
+didn't cover are marked (decision); the open questions are listed last, and in the PR.
+
+- **First, result retention** (the coordinator's ruling). `sessions.resultRetention` (default 168h,
+  7 days): once any run has been ended that long, the controller's sweep clears its statements'
+  code, output and error, its saved log tail, and its two bearers. State, reason and timestamps stay;
+  `contentClearedAt` says when, and its log answers 410 `cleared`. Store, controller and API tests;
+  Integration (retention 4m) checks the content is there right after a session and an application
+  end, and cleared after.
+- **What a run asks for** (`dataAccess`): `database`, `lakehouse`, and up to 4 `storage` locations,
+  each `{backendId, path, access}` (read by default). An application may also start from
+  `main.python` or `main.jar` (with `mainClass`) in booth-storage. Each path answers 422 on an
+  install that doesn't offer it (`dataAccess.database|lakehouse|storage.enabled`); a workload token
+  gets none of it (422, ruling 5), a storage entry point included.
+- **A module-owned runtime image** (`images/spark-runtime`; decision). The note puts the two Java
+  helpers "in the image"; this is that image: Spark 4.1.3 as pinned, plus the PostgreSQL JDBC
+  driver, Iceberg 1.12.0's Spark 4.1 runtime, hadoop-aws 3.4.2 and the AWS SDK v2 bundle it is built
+  against, each jar by SHA-256, and the helpers. It is about 3.5 GB uncompressed, 1.3 GB more than
+the Spark image it starts from, most of that the SDK bundle. The
+  chart refuses `dataAccess.enabled` with plain `apache/spark` as `runs.image`. Publishing it is an
+  open question (below).
+- **Locations are resolved before the launch, as the run** (decision). The broker's s3 answer is
+  the only place a location's bucket and key prefix are given; the sidecar writes only keys and an
+  endpoint. So the backend asks the broker once per location with the run's own first token,
+  keeps where it is (endpoint, bucket, key prefix, path style) and drops the keys unread. Each such
+  request makes one short lease (booth-storage's 15-minute floor) that nothing uses. In return a
+  location the submitter can't have, a workspace with no warehouse, or `readwrite` asked by a
+  submitter who is now a viewer fails the run at once with the broker's own reason, before any
+  pod exists.
+- **The warehouse is `s3://`, a storage location `s3a://`** (decision). S3A takes credentials per
+  bucket, not per prefix. The helper picks the sidecar's file by bucket and scheme, so the
+  warehouse (`s3://`, the locations booth-lakehouse's catalog gives) and a storage location can
+  share a bucket. Two storage locations can't: a run naming two in one bucket is refused with the
+  reason, and should name their common parent. An open question (below).
+- **Iceberg through HadoopFileIO over S3A** (decision), not Iceberg's S3FileIO: one AWS SDK in the
+  image, and one credentials path for every byte a run reads.
+- **The pod's order** (decision): the agent (a native sidecar whose startup probe passes once the
+  token is on disk), then the postgres and s3 sidecars, then a start gate (an init container that
+  waits for every sidecar's first lease, since their health endpoints are loopback-only and a
+  kubelet probe can't reach them), then Spark. The same in every executor, through Spark's pod
+  template. The driver's start gate also copies a booth-storage entry point in, read through the
+  backend as the run (`GET /internal/main`, at most 256 MiB), rather than through an s3 sidecar,
+  which would hit the one-location-per-bucket limit for code beside its data (decision).
+- **What a run's code can read**, as item 4's table says: the token (Iceberg reads it on every
+  call), the S3 keys of its own leases, `DATABASE_URL`/`JDBC_DATABASE_URL` (no password: the
+  postgres sidecar on localhost). The data bearer is mounted into the agent and the start gate only,
+  never the Spark container, and is never shown through the API.
+- **The internal port** (8081) serves the token against the run's data bearer, forwards the
+  sidecars' broker calls (s3 and postgres, the postgres scope only the run's own workspace) and
+  Iceberg's REST catalog (to `/modules/lakehouse/iceberg/...`) for a live run of this install in its
+  own workspace, and the entry point. A chart NetworkPolicy opens it to this install's run
+  namespaces only (decision: the note doesn't name one); 8080 stays as it was.
+- **Run namespaces with database access carry booth-database's client label**
+  (`booth.projectbooth.io/database-client=true`; decision). booth-database's Postgres admits only
+  labelled namespaces; core labels module namespaces, and a run's namespace is the module's own.
+  The fence policy already allows extra labels.
+- **A demoted submitter ends the run** (decision). The note says a demoted editor's next mint is a
+  viewer token; it doesn't say what happens to a live run. Its sidecars hold read-write leases (an
+  hour for Postgres), so a run that started as an editor's ends once its token comes back viewer,
+  and its namespace goes, as for a refused mint. A run that started as a viewer's goes on.
+- **A refusal while the run lives** (the submitter lost access, the module isn't entitled, or a
+  demotion) fails it with the reason and deletes its namespace; an outage is retried, and a run
+  still unresolved at `runs.pendingTimeout` fails.
+- **Network**: a data run's pods may reach the backend's internal port, booth-database's Postgres
+  pods and the object store (`dataAccess.objectStore.egress`, for an in-cluster MinIO; AWS S3 goes
+  through open egress); nothing else of the cluster, as before.
+- **Checked locally before the first push**, in the runtime image against a real MinIO (one
+  container each; the full Integration stack doesn't fit this machine's memory): S3A read and write
+  on `s3a://` and `s3://` through the sidecar-file credentials provider, Iceberg through
+  HadoopFileIO on `s3://`, the token-file auth manager sending the file's token and `X-Workspace` on
+  every REST call, and an undeclared bucket refused with the provider's message. The Go and
+  contract tests ran against a real Postgres; the agent's tests on Linux.
+- **Integration** proves it in a new job, `data`: the real-core install with data access on, plus
+  booth-database, booth-storage (its s3 credential provider), booth-lakehouse with Lakekeeper and a
+  MinIO at pinned refs (the ones booth-streamlit's real-core job pins), on Calico (`data.sh`):
+  - an editor's application from a Python file in booth-storage reads a CSV on an executor,
+    writes and reads an Iceberg table and a Postgres table, and writes back to storage;
+  - a session with data access queries both; its Spark container has no bearer;
+  - two refusals at launch, each with its reason;
+  - a data run reaches the internal port and Postgres; a run without data access, and a pod
+    outside every run, are dropped there;
+  - the submitter demoted to viewer, then removed: their running session ends, its namespace goes.
+
+  The step 5 audit: `egress.sh` and `uninstall.sh` refusals now accept only their specific reason,
+  each with a control (every blocked target first shown to answer from outside a run; a failing
+  kubectl listing is never "nothing left"; a release is gone only on helm's "release: not found").
+
+Open questions, for the coordinator (in the PR too):
+
+1. **Publishing the runtime image.** Data access needs `runs.image` to be booth-spark's runtime
+   image, which CI builds but nothing publishes yet; the chart's default stays plain `apache/spark`
+   (data access off). Publish it to GHCR with a release (step 6, or now), and make its digest the
+   default?
+2. **One storage location per bucket.** A run can't name two locations in one bucket in v0 (S3A's
+   credentials are per bucket); it names their common parent instead. Acceptable as a documented
+   limit, or should two prefixes in one bucket be supported (a custom scheme per location)?
+3. **An application's inline code is not cleared by retention.** `sessions.resultRetention` clears
+   statement code, output and error and log tails, as ruled; an application's `main.inlinePython`
+   stays in its run record. Clear it too?
+4. **The `data` job is not a required check.** Branch protection requires go, helm-lint, image,
+   standins and real-core. Add `data`?

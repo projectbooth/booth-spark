@@ -5,7 +5,6 @@
 package runs
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -24,20 +23,21 @@ type Spec struct {
 	Args      []string          `json:"args,omitempty"`
 	Resources Resources         `json:"resources,omitempty"`
 	Conf      map[string]string `json:"conf,omitempty"`
-	// DataAccess asks for the run's data access (database, lakehouse, storage locations). Not
-	// available until build step 5; any non-empty value is refused with a clear message.
-	DataAccess json.RawMessage `json:"dataAccess,omitempty"`
+	// DataAccess asks for the run's data access (database, lakehouse, storage locations), as its
+	// submitter, capped at editor (docs/design-v0.md item 4).
+	DataAccess *DataAccess `json:"dataAccess,omitempty"`
 	// MaxDuration bounds the run (Go duration, e.g. "30m"); at most Limits.MaxDuration, which is
 	// also the default.
 	MaxDuration string `json:"maxDuration,omitempty"`
 }
 
-// Main is the application's entry point. In step 3 only inline Python exists: Python or JAR files
-// from booth-storage need the run's data access (step 5).
+// Main is the application's entry point: inline Python, or a Python file or a JAR (with its main
+// class) in booth-storage, read as the run's submitter when it starts.
 type Main struct {
-	InlinePython string          `json:"inlinePython,omitempty"`
-	Python       json.RawMessage `json:"python,omitempty"`
-	Jar          json.RawMessage `json:"jar,omitempty"`
+	InlinePython string   `json:"inlinePython,omitempty"`
+	Python       *FileRef `json:"python,omitempty"`
+	Jar          *FileRef `json:"jar,omitempty"`
+	MainClass    string   `json:"mainClass,omitempty"`
 }
 
 // Resources are what a caller may size, within Limits.
@@ -64,7 +64,7 @@ type SessionSpec struct {
 	Name       string            `json:"name"`
 	Resources  Resources         `json:"resources,omitempty"`
 	Conf       map[string]string `json:"conf,omitempty"`
-	DataAccess json.RawMessage   `json:"dataAccess,omitempty"`
+	DataAccess *DataAccess       `json:"dataAccess,omitempty"`
 	// IdleTimeout stops the session after this long with no statement waiting or running and no
 	// new one (Go duration); at most Limits.SessionIdleTimeout, which is also the default.
 	IdleTimeout string `json:"idleTimeout,omitempty"`
@@ -82,6 +82,8 @@ type Limits struct {
 	MaxDuration        time.Duration
 	SessionIdleTimeout time.Duration
 	SessionMaxLifetime time.Duration
+	// Data is which data paths this install offers runs.
+	Data DataLimits
 }
 
 // Validated is a Spec with every default applied and every value checked.
@@ -159,17 +161,11 @@ func PodMemoryMi(heapMi int) int {
 
 // Validate applies defaults and checks an application's Spec against l.
 func Validate(s Spec, l Limits) (Validated, error) {
-	if len(s.Main.Python) > 0 || len(s.Main.Jar) > 0 {
-		return Validated{Spec: s}, Unavailable{"main.python and main.jar read files from booth-storage, which needs data access; that arrives in a later release. Use main.inlinePython."}
-	}
 	if !nameRE.MatchString(s.Name) {
 		return Validated{Spec: s}, invalid("name: 1 to 100 characters, letters, digits, spaces, '.', '_' or '-', starting with a letter or digit")
 	}
-	if strings.TrimSpace(s.Main.InlinePython) == "" {
-		return Validated{Spec: s}, invalid("main.inlinePython is required")
-	}
-	if len(s.Main.InlinePython) > maxInlinePython {
-		return Validated{Spec: s}, invalid("main.inlinePython is larger than %d KiB", maxInlinePython>>10)
+	if err := validateMain(s.Main, l); err != nil {
+		return Validated{Spec: s}, err
 	}
 	if len(s.Args) > maxArgs {
 		return Validated{Spec: s}, invalid("at most %d args", maxArgs)
@@ -239,8 +235,8 @@ func validateCommon(s Spec, l Limits) (Validated, error) {
 			return v, invalid("conf %q: value too long or not a single line", k)
 		}
 	}
-	if raw := strings.TrimSpace(string(s.DataAccess)); raw != "" && raw != "null" && raw != "{}" {
-		return v, Unavailable{"dataAccess arrives in a later release; this run would have no data access"}
+	if err := validateData(s.DataAccess, l); err != nil {
+		return v, err
 	}
 	maxHeap, err := HeapMi(l.MaxMemory)
 	if err != nil {
@@ -279,9 +275,9 @@ func validateCommon(s Spec, l Limits) (Validated, error) {
 }
 
 // FootprintMi is the most memory a run's pods can use at once: the driver plus every executor it
-// may scale to. The admission budget (Limits, memoryBudget) is checked against it.
+// may scale to, each with its data-access sidecars. The admission budget (Limits, memoryBudget) is checked against it.
 func (v Validated) FootprintMi() int {
-	return PodMemoryMi(v.DriverHeapMi) + v.MaxExecutors*PodMemoryMi(v.ExecutorHeapMi)
+	return PodMemoryMi(v.DriverHeapMi) + v.MaxExecutors*PodMemoryMi(v.ExecutorHeapMi) + (1+v.MaxExecutors)*v.SidecarMi()
 }
 
 func allowedConfList() []string {
