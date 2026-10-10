@@ -17,8 +17,6 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/projectbooth/booth-spark/internal/sparkconf"
 )
 
 type boothModule struct {
@@ -340,39 +338,6 @@ func TestChart_SubmitMinRole(t *testing.T) {
 	helmFails(t, `submit.minRole must be "editor" or "owner"`, "--api-versions", vapAPI, "--set", "submit.minRole=viewer")
 }
 
-// Build step 2's proof run table is test-only: nothing is rendered by default, and a value given
-// is passed through as JSON the backend validates.
-func TestChart_UIProofRunsAreOffByDefault(t *testing.T) {
-	if strings.Contains(string(helmTemplate(t, "templates/deployment.yaml")), "BOOTH_UI_PROOF_RUNS") {
-		t.Error("BOOTH_UI_PROOF_RUNS rendered by default")
-	}
-	dep := string(helmTemplate(t, "templates/deployment.yaml", "--set-json",
-		`uiProof.runs=[{"id":"proof-1","workspace":"acme","submitter":"u-1","url":"http://d:4040"}]`))
-	if !strings.Contains(dep, `BOOTH_UI_PROOF_RUNS`) || !strings.Contains(dep, `\"submitter\":\"u-1\"`) {
-		t.Errorf("proof runs not rendered:\n%s", dep)
-	}
-}
-
-// Step 2's proof driver must run with exactly the Spark UI settings the module will give its own
-// drivers (internal/sparkconf), so the proof proves the real configuration.
-func TestProofDriver_UsesTheModulesUIConf(t *testing.T) {
-	raw, err := os.ReadFile(repoFile("test", "integration", "fixtures", "proof-driver.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(raw)
-	for k, v := range sparkconf.UIConf() {
-		if !strings.Contains(s, "- "+k+"="+v+"\n") {
-			t.Errorf("proof driver lacks --conf %s=%s", k, v)
-		}
-	}
-	for k, v := range sparkconf.UIEnv("proof-1") {
-		if !regexp.MustCompile(`name: ` + k + `\s+value: ` + regexp.QuoteMeta(v) + `\n`).MatchString(s) {
-			t.Errorf("proof driver lacks env %s=%s", k, v)
-		}
-	}
-}
-
 // docs/design-v0.md item 8: the controller's placement uses plain Kubernetes names, passed through.
 func TestChart_Placement(t *testing.T) {
 	def := string(helmTemplate(t, "templates/deployment.yaml"))
@@ -402,28 +367,6 @@ func TestChart_Placement(t *testing.T) {
 	ps := dep.Spec.Template.Spec
 	if ps.NodeSelector["booth.projectbooth.io/pool"] != "compute" || len(ps.Tolerations) != 1 || ps.Tolerations[0]["value"] != "compute" || ps.Affinity["nodeAffinity"] == nil {
 		t.Errorf("placement not passed through: %+v", ps)
-	}
-}
-
-// The scaffold's backend has no Kubernetes API access at all (step 3 adds exactly the fenced rights),
-// and runs hardened.
-func TestChart_BackendHasNoAPIAccessAndRunsHardened(t *testing.T) {
-	all := string(helmTemplate(t, ""))
-	for _, kind := range []string{"kind: Role", "kind: ClusterRole", "kind: RoleBinding", "kind: ClusterRoleBinding"} {
-		if strings.Contains(all, kind) {
-			t.Errorf("the scaffold renders %s; the backend gets no API access before step 3", kind)
-		}
-	}
-	if c := strings.Count(all, "automountServiceAccountToken: false"); c != 2 {
-		t.Errorf("automountServiceAccountToken: false appears %d times, want on both the ServiceAccount and the pod", c)
-	}
-	for _, want := range []string{"runAsNonRoot: true", "readOnlyRootFilesystem: true", "allowPrivilegeEscalation: false", "type: RuntimeDefault", `- ALL`} {
-		if !strings.Contains(all, want) {
-			t.Errorf("chart lacks %q", want)
-		}
-	}
-	if !regexp.MustCompile(`limits:\s+cpu: 500m\s+memory: 256Mi`).MatchString(all) {
-		t.Error("the backend's homelab limits (500m / 256Mi, docs/design-v0.md item 7) are not set")
 	}
 }
 

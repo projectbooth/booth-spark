@@ -7,13 +7,14 @@
 //     with core's X-Booth-Identity assertion (internal/identity): the module's own UI now, the
 //     Spark UI proxy from step 2.
 //
-// Authenticated today: the two "who am I" calls (/v1/me and /ui/api/me), and the Spark UI proxy
-// (/runs/{id}/ui/..., step 2), over a fixed proof run table until step 3 brings real runs.
-// Sessions and the rest of item 6 arrive in steps 3 and 4.
+// Authenticated today: the two "who am I" calls (/v1/me and /ui/api/me), the applications API
+// (/v1/applications, step 3), and the Spark UI proxy (/runs/{id}/ui/..., step 2) over the
+// module's run records. Sessions arrive in step 4.
 package api
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -52,10 +53,18 @@ type Deps struct {
 	SubmitMinRole auth.Role
 	// Runs resolves a run id to its UI. Nil means no run's UI can be opened.
 	Runs RunLookup
+	// Applications is the /v1 job-submission API. Nil leaves /v1/applications unrouted (404).
+	Applications *Applications
 }
 
-// RunLookup resolves a run id to what the Spark UI proxy needs. In step 2 it is the fixed proof
-// table (config.UIProofRuns); step 3 replaces it with the module's own run records.
+// OpenAPI is the /v1 interface's OpenAPI 3.1 document (openapi/v1.yaml), linted in CI and kept
+// equal to the routes by TestOpenAPI_MatchesTheRoutes.
+//
+//go:embed openapi/v1.yaml
+var OpenAPI []byte
+
+// RunLookup resolves a run id to what the Spark UI proxy needs: StoreRuns, over the module's own
+// run records.
 type RunLookup interface {
 	Lookup(ctx context.Context, id string) (uiproxy.Run, bool)
 }
@@ -94,6 +103,14 @@ func NewRouter(deps Deps) http.Handler {
 				Operator: id.Operator, Workload: id.Workload, CanSubmit: canSubmit(id.Role, deps.SubmitMinRole),
 				SubmitMinRole: string(deps.SubmitMinRole),
 			})
+		})
+		if deps.Applications != nil {
+			deps.Applications.routes(v1, deps.SubmitMinRole)
+		}
+		// The interface's own documentation (docs/design-v0.md item 6), for any authenticated caller.
+		v1.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/yaml")
+			_, _ = w.Write(OpenAPI)
 		})
 		v1.NotFound(func(w http.ResponseWriter, _ *http.Request) { auth.WriteError(w, http.StatusNotFound, "not found") })
 	})
@@ -154,8 +171,8 @@ func sparkUI(runs RunLookup) http.HandlerFunc {
 			return
 		}
 		rest := strings.TrimPrefix(r.URL.Path, uiproxy.LocalPrefix(id))
-		if uiproxy.Blocked(rest) {
-			http.Error(w, "this Spark UI action is disabled in Booth", http.StatusForbidden)
+		if !uiproxy.Allowed(rest) {
+			http.Error(w, "this Spark UI page or action is not available in Booth", http.StatusForbidden)
 			return
 		}
 		target, err := url.Parse(run.UIURL)
@@ -165,15 +182,6 @@ func sparkUI(runs RunLookup) http.HandlerFunc {
 		}
 		uiproxy.Serve(w, r, run, target)
 	}
-}
-
-// StaticRuns is a fixed run table, keyed by id.
-type StaticRuns map[string]uiproxy.Run
-
-// Lookup implements RunLookup.
-func (s StaticRuns) Lookup(_ context.Context, id string) (uiproxy.Run, bool) {
-	run, ok := s[id]
-	return run, ok
 }
 
 // me is the "who am I" body both route groups return: what this module derived from the caller's

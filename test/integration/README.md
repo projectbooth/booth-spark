@@ -19,17 +19,38 @@ head SHA.
 - Each credential only on its own route group: a bearer token on an iframe route, or an OIDC token presented as an assertion, is 401.
 - Keys come from `oidc.jwksUrl`: it is deliberately spelled differently from the issuer (`…svc.cluster.local` against `…svc`), and the backend's single startup log line names it, the issuer and the workload issuer. Nothing token-shaped is logged.
 
-`ui-path.sh` (build step 2, docs/design-v0.md item 5) runs against a real Spark 4.1.3 driver started by hand (`fixtures/proof-driver.yaml`, the pinned image, local mode, with exactly `internal/sparkconf`'s UI settings), listed in the chart's test-only `uiProof.runs` with `editor-user` as its submitter:
+The real-core job runs kind **with Calico** (`cni/`): kindnet enforces NetworkPolicy ingress but not
+egress, and the run namespaces' egress rules are a boundary (ADR 0110). Then, in order:
 
-- Through core's real iframe proxy, the submitter sees the run's UI. Spark's root redirect is rewritten under the run's prefix; the jobs page, links, a static asset and the REST API all resolve under it. The Environment page and its REST twin show a secret-named conf's name but never its value. The driver sets no cookie.
-- The kill pages (GET), a kill POST, and the thread-dump, heap-histogram and threads-REST endpoints are all refused. Spark 4.1.3 serves the REST thread dump even with `spark.ui.threadDumpsEnabled=false`, so the proxy blocks it itself. A `..` escape out of the prefix is refused too.
-- Nobody else sees the UI. A workspace owner, a viewer and a platform operator get 403; a member of another workspace gets 404; no session or no assertion gets 401.
-- A real Chromium (`browser/spark-ui.mjs`) browses it inside an iframe on core's origin: the Jobs, Executors (built by JavaScript from the REST API), Environment and SQL tabs. Every request stays under the prefix and none fails, no kill link is rendered, and an operator gets 403.
+- `runs.sh`: an editor's PySpark application runs with 2 real executors in its own labelled,
+  restricted namespace owned by the driver ClusterRole, succeeds, keeps its log, and its namespace
+  goes. A viewer, and an operator who is a viewer, can't submit. Logs are for the submitter, owners
+  and operators only. A failing application is `failed` with the driver's exit. An owner stops an
+  editor's run. Admission refuses what doesn't fit the memory budget (429).
+- `isolation.sh`: run A (editor) probes run B (owner) as its own user code (`fixtures/probe.py`):
+  B's pods, Secrets, namespace and driver ports are refused. In its own namespace the run-pods policy
+  refuses a non-allowlisted image, a missing nodeSelector, any account but `executor`, a mounted
+  token, and another workspace's label. A pod outside every run can't reach a driver's UI port.
+  Impersonating the backend's account: no namespace or RoleBinding outside its fence, no label on any
+  namespace, nothing in kube-system. The executor account has no permissions. Every refusal has a
+  control that must succeed.
+- `ui-path.sh`: a real run's Spark UI through core's real iframe proxy (curl, then Chromium: Jobs,
+  Executors, a stage's detail page, Environment, SQL). It is for the submitter only; owners, viewers
+  and operators get 403, another workspace 404. The allowlist refuses kill, thread-dump and
+  heap-histogram pages and the REST threads endpoint. A token-named conf is redacted, the driver
+  sets no cookie, every request stays under the prefix, and the driver's UI port is closed to
+  anything but the backend's pods.
+- `egress.sh`: from inside a run, with mode `open`, the internet is reachable while another
+  namespace's pod, a Service ClusterIP, booth-core's pod and the node's kubelet are not. With mode
+  `closed`, the internet is not reachable either. DNS, the API and the run's own port stay reachable
+  as controls.
+- `uninstall.sh`: `helm uninstall` with a live run, then a reinstall as release `spark` uninstalled
+  through booth-core's module uninstall API with a live run. Each time, no run namespace, policy,
+  binding, ClusterRole or `default` Role is left.
 
 ## Not covered yet (later build steps)
 
-- Run namespaces, the two admission policies, the exact-rules RBAC tests, isolation, and uninstall cleaning up run namespaces, policies and ClusterRoles against a real core (step 3). Until then the proof driver's port is not fenced by a NetworkPolicy.
-- Sessions and idle shutdown (step 4), data access and egress (step 5).
+- Sessions and idle shutdown (step 4), data access (step 5).
 
 ## Running locally
 

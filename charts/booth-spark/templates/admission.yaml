@@ -1,0 +1,154 @@
+{{- /*
+The two admission policies of docs/design-v0.md item 3 (ADR 0110 ruling 2). Both fail closed.
+Integration's isolation tests exercise every rule, each with a request that must pass as control.
+
+1. "<fullname>-run-pods": every pod created or updated in one of this install's run namespaces
+   (selected by the namespace label only the backend sets, through policy 2) must
+     - use only allowlisted images (runs.image);
+     - carry its namespace's workspace label (ADR 0077);
+     - carry the configured nodeSelector of its kind (runs.driver / runs.executor, item 8);
+     - run as "executor" with no token mounted, unless it is the driver, which only the backend
+       itself may create. So the driver, which runs user code and may create pods, can create
+       executor-like pods within its quota and nothing else.
+2. "<fullname>-fence": the backend's own cluster-wide rights (rbac.yaml) apply only to its own
+   namespaces: it may create a namespace only as bspark-<run>, labelled, restricted, owned by the
+   driver ClusterRole; delete only such namespaces; and create RoleBindings only inside them, only
+   to the two ClusterRoles, only for the fixed subjects.
+*/ -}}
+{{- $fullname := include "booth-spark.fullname" . }}
+{{- $instance := include "booth-spark.instance" . }}
+{{- $backend := printf "system:serviceaccount:%s:%s" .Release.Namespace (include "booth-spark.serviceAccountName" .) }}
+{{- $images := list .Values.runs.image }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $fullname }}-run-pods
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        booth.projectbooth.io/spark-run: {{ $instance | quote }}
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  variables:
+    - name: images
+      expression: >-
+        object.spec.containers.map(c, c.image)
+        + (has(object.spec.initContainers) ? object.spec.initContainers.map(c, c.image) : [])
+        + (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers.map(c, c.image) : [])
+    - name: allowed
+      expression: {{ toJson $images | quote }}
+    - name: sa
+      expression: "has(object.spec.serviceAccountName) && object.spec.serviceAccountName != '' ? object.spec.serviceAccountName : 'default'"
+    - name: labels
+      expression: "has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: selector
+      expression: "has(object.spec.nodeSelector) ? object.spec.nodeSelector : {}"
+    - name: want
+      expression: >-
+        variables.sa == 'driver' ? {{ toJson (.Values.runs.driver.nodeSelector | default dict) }} : {{ toJson (.Values.runs.executor.nodeSelector | default dict) }}
+  validations:
+    - expression: "variables.images.all(i, i in variables.allowed)"
+      messageExpression: "'booth-spark: image not allowed in a run namespace: ' + variables.images.filter(i, !(i in variables.allowed)).join(', ')"
+      reason: Forbidden
+    - expression: >-
+        'booth.projectbooth.io/workspace' in variables.labels &&
+        variables.labels['booth.projectbooth.io/workspace'] == namespaceObject.metadata.labels['booth.projectbooth.io/workspace']
+      message: "booth-spark: a run's pods carry their namespace's workspace label"
+      reason: Forbidden
+    - expression: "variables.want.all(k, k in variables.selector && variables.selector[k] == variables.want[k])"
+      message: "booth-spark: a run's pods carry the configured nodeSelector (runs.driver / runs.executor)"
+      reason: Forbidden
+    - expression: >-
+        variables.sa == 'driver'
+          ? request.userInfo.username == {{ $backend | quote }}
+          : (variables.sa == 'executor' && has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)
+      message: "booth-spark: pods in a run namespace run as the executor account with no token mounted; only booth-spark creates the driver"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $fullname }}-run-pods
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $fullname }}-run-pods
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $fullname }}-fence
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [namespaces]
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+  matchConditions:
+    - name: is-booth-spark
+      expression: >-
+        request.userInfo.username == {{ $backend | quote }}
+  variables:
+    - name: instance
+      expression: {{ $instance | quote | quote }}
+    - name: isNamespace
+      expression: "request.resource.resource == 'namespaces'"
+  validations:
+    - expression: "request.operation != 'UPDATE'"
+      message: "booth-spark never updates a namespace or a RoleBinding"
+      reason: Forbidden
+    - expression: >-
+        !variables.isNamespace || request.operation != 'CREATE' || (
+          object.metadata.name.startsWith('bspark-') &&
+          has(object.metadata.labels) &&
+          ('booth.projectbooth.io/spark-run' in object.metadata.labels ? object.metadata.labels['booth.projectbooth.io/spark-run'] : '') == variables.instance &&
+          ('booth.projectbooth.io/workspace' in object.metadata.labels ? object.metadata.labels['booth.projectbooth.io/workspace'] : '') != '' &&
+          ('pod-security.kubernetes.io/enforce' in object.metadata.labels ? object.metadata.labels['pod-security.kubernetes.io/enforce'] : '') == 'restricted' &&
+          has(object.metadata.ownerReferences) &&
+          object.metadata.ownerReferences.exists(o, o.kind == 'ClusterRole' && o.name == {{ printf "%s-driver" $fullname | quote }}))
+      message: "booth-spark may create only its own run namespaces (bspark-<run>, labelled, restricted, owned by its driver ClusterRole)"
+      reason: Forbidden
+    - expression: >-
+        !variables.isNamespace || request.operation != 'DELETE' ||
+        (has(oldObject.metadata.labels) && ('booth.projectbooth.io/spark-run' in oldObject.metadata.labels ? oldObject.metadata.labels['booth.projectbooth.io/spark-run'] : '') == variables.instance)
+      message: "booth-spark may delete only its own run namespaces"
+      reason: Forbidden
+    - expression: >-
+        variables.isNamespace || (
+          request.operation == 'CREATE' &&
+          (has(namespaceObject.metadata.labels) && ('booth.projectbooth.io/spark-run' in namespaceObject.metadata.labels ? namespaceObject.metadata.labels['booth.projectbooth.io/spark-run'] : '')) == variables.instance &&
+          object.roleRef.kind == 'ClusterRole' && (
+            (object.roleRef.name == {{ printf "%s-run-controller" $fullname | quote }} && object.subjects.size() == 1 &&
+              object.subjects[0].kind == 'ServiceAccount' && object.subjects[0].name == {{ include "booth-spark.serviceAccountName" . | quote }} &&
+              object.subjects[0].namespace == {{ .Release.Namespace | quote }}) ||
+            (object.roleRef.name == {{ printf "%s-driver" $fullname | quote }} && object.subjects.size() == 1 &&
+              object.subjects[0].kind == 'ServiceAccount' && object.subjects[0].name == 'driver' &&
+              object.subjects[0].namespace == object.metadata.namespace)))
+      message: "booth-spark may create RoleBindings only in its own run namespaces, only to its run-controller and driver ClusterRoles, for their fixed subjects"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $fullname }}-fence
+  labels:
+    {{- include "booth-spark.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $fullname }}-fence
+  validationActions: [Deny]

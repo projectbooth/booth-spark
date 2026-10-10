@@ -1,0 +1,19 @@
+booth-spark {{ .Chart.AppVersion }} is installed in {{ .Release.Namespace }}.
+
+Every Spark run gets its own namespace, bspark-<run>, fenced by the admission policies
+{{ include "booth-spark.fullname" . }}-run-pods and {{ include "booth-spark.fullname" . }}-fence and by default-deny NetworkPolicies.
+Uninstalling this chart deletes every run namespace with it.
+
+Egress: runs.egress.mode={{ .Values.runs.egress.mode }}.
+{{- if eq .Values.runs.egress.mode "open" }}
+  A run's code can reach the internet (never a private or cluster range) and can send there
+  anything it can read. Set runs.egress.mode=closed, or submit.minRole=owner, where editors
+  aren't trusted.
+{{- end }}
+
+Known residual: a run's driver runs user code with a Kubernetes account (Spark needs it for its
+executors), so user code can call the Kubernetes API server directly. The account is limited to
+the run's own namespace, but the API server itself is within reach of user code.
+
+The isolation of runs depends on the cluster's CNI enforcing NetworkPolicy, egress included
+(k3s's does; kind's default kindnet does not enforce egress).

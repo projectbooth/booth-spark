@@ -1,0 +1,243 @@
+// Package runs is booth-spark's run model and controller (docs/design-v0.md items 1, 3 and 7):
+// a run (in step 3, a batch application) is a row in the module's own database and, while it is
+// live, a namespace of its own holding one driver and 0 to N executors. The namespace is deleted
+// when the run ends, which ends everything in it.
+package runs
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Spec is what a caller submits: POST /v1/applications' body (docs/design-v0.md item 6). Every
+// field is validated against Limits before anything is created.
+type Spec struct {
+	Name      string            `json:"name"`
+	Main      Main              `json:"main"`
+	Args      []string          `json:"args,omitempty"`
+	Resources Resources         `json:"resources,omitempty"`
+	Conf      map[string]string `json:"conf,omitempty"`
+	// DataAccess asks for the run's data access (database, lakehouse, storage locations). Not
+	// available until build step 5; any non-empty value is refused with a clear message.
+	DataAccess json.RawMessage `json:"dataAccess,omitempty"`
+	// MaxDuration bounds the run (Go duration, e.g. "30m"); at most Limits.MaxDuration, which is
+	// also the default.
+	MaxDuration string `json:"maxDuration,omitempty"`
+}
+
+// Main is the application's entry point. In step 3 only inline Python exists: Python or JAR files
+// from booth-storage need the run's data access (step 5).
+type Main struct {
+	InlinePython string          `json:"inlinePython,omitempty"`
+	Python       json.RawMessage `json:"python,omitempty"`
+	Jar          json.RawMessage `json:"jar,omitempty"`
+}
+
+// Resources are what a caller may size, within Limits.
+type Resources struct {
+	Driver    PodSize      `json:"driver,omitempty"`
+	Executors ExecutorSize `json:"executors,omitempty"`
+}
+
+// PodSize is a JVM heap size, Spark's notation ("512m", "1g").
+type PodSize struct {
+	Memory string `json:"memory,omitempty"`
+}
+
+// ExecutorSize is the dynamic-allocation range and each executor's heap.
+type ExecutorSize struct {
+	Min    *int   `json:"min,omitempty"`
+	Max    *int   `json:"max,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+// Limits are the chart's `runs` settings that bound what a caller may ask for.
+type Limits struct {
+	MaxExecutors     int
+	DefaultExecutors int
+	DriverMemory     string // default heap
+	ExecutorMemory   string // default heap
+	MaxMemory        string // largest heap a caller may ask for, driver or executor
+	MaxDuration      time.Duration
+}
+
+// Validated is a Spec with every default applied and every value checked.
+type Validated struct {
+	Spec
+	DriverHeapMi   int
+	ExecutorHeapMi int
+	MinExecutors   int
+	MaxExecutors   int
+	Duration       time.Duration
+}
+
+// A ValidationError is the caller's mistake (400). An Unavailable is something this version can't
+// do yet (422).
+type ValidationError struct{ msg string }
+
+func (e ValidationError) Error() string { return e.msg }
+
+type Unavailable struct{ msg string }
+
+func (e Unavailable) Error() string { return e.msg }
+
+func invalid(format string, a ...any) error { return ValidationError{fmt.Sprintf(format, a...)} }
+
+// AllowedConf are the Spark settings a caller may set. Everything else is the module's: the
+// master, namespace, images, ports, accounts, UI settings and resources are what make a run
+// isolated and bounded, so none of them can be overridden.
+var AllowedConf = map[string]bool{
+	"spark.sql.shuffle.partitions":              true,
+	"spark.default.parallelism":                 true,
+	"spark.sql.adaptive.enabled":                true,
+	"spark.sql.session.timeZone":                true,
+	"spark.sql.ansi.enabled":                    true,
+	"spark.serializer":                          false, // deliberately not settable: a class name runs code
+	"spark.sql.execution.arrow.pyspark.enabled": true,
+}
+
+const (
+	maxInlinePython = 256 << 10
+	maxArgs         = 64
+	maxArgLen       = 4096
+	maxConfValue    = 256
+	minHeapMi       = 512
+)
+
+var (
+	memRE  = regexp.MustCompile(`^([1-9][0-9]{0,5})([mg])$`)
+	nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$`)
+)
+
+// HeapMi parses Spark's memory notation into MiB.
+func HeapMi(s string) (int, error) {
+	m := memRE.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("%q is not a memory size like 512m or 1g", s)
+	}
+	v, _ := strconv.Atoi(m[1])
+	if m[2] == "g" {
+		v *= 1024
+	}
+	return v, nil
+}
+
+// PodMemoryMi is a Spark pod's memory: the heap plus Spark's overhead for a Python application
+// (spark.kubernetes.memoryOverheadFactor 0.4 for non-JVM jobs, at least 384MiB).
+func PodMemoryMi(heapMi int) int {
+	overhead := heapMi * 4 / 10
+	if overhead < 384 {
+		overhead = 384
+	}
+	return heapMi + overhead
+}
+
+// Validate applies defaults and checks a Spec against l.
+func Validate(s Spec, l Limits) (Validated, error) {
+	v := Validated{Spec: s}
+	if !nameRE.MatchString(s.Name) {
+		return v, invalid("name: 1 to 100 characters, letters, digits, spaces, '.', '_' or '-', starting with a letter or digit")
+	}
+	if len(s.Main.Python) > 0 || len(s.Main.Jar) > 0 {
+		return v, Unavailable{"main.python and main.jar read files from booth-storage, which needs data access; that arrives in a later release. Use main.inlinePython."}
+	}
+	if strings.TrimSpace(s.Main.InlinePython) == "" {
+		return v, invalid("main.inlinePython is required")
+	}
+	if len(s.Main.InlinePython) > maxInlinePython {
+		return v, invalid("main.inlinePython is larger than %d KiB", maxInlinePython>>10)
+	}
+	if len(s.Args) > maxArgs {
+		return v, invalid("at most %d args", maxArgs)
+	}
+	for i, a := range s.Args {
+		if len(a) > maxArgLen || strings.ContainsRune(a, 0) {
+			return v, invalid("args[%d] is longer than %d bytes or contains NUL", i, maxArgLen)
+		}
+	}
+	keys := make([]string, 0, len(s.Conf))
+	for k := range s.Conf {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !AllowedConf[k] {
+			return v, invalid("conf %q can't be set; allowed: %s", k, strings.Join(allowedConfList(), ", "))
+		}
+		if len(s.Conf[k]) > maxConfValue || strings.ContainsAny(s.Conf[k], "\n\r\x00") {
+			return v, invalid("conf %q: value too long or not a single line", k)
+		}
+	}
+	if raw := strings.TrimSpace(string(s.DataAccess)); raw != "" && raw != "null" && raw != "{}" {
+		return v, Unavailable{"dataAccess arrives in a later release; this run would have no data access"}
+	}
+
+	maxHeap, err := HeapMi(l.MaxMemory)
+	if err != nil {
+		return v, fmt.Errorf("runs limits: %w", err)
+	}
+	heap := func(field, given, def string) (int, error) {
+		if given == "" {
+			given = def
+		}
+		mi, err := HeapMi(given)
+		if err != nil {
+			return 0, invalid("%s: %v", field, err)
+		}
+		if mi < minHeapMi || mi > maxHeap {
+			return 0, invalid("%s: between %dm and %s", field, minHeapMi, l.MaxMemory)
+		}
+		return mi, nil
+	}
+	if v.DriverHeapMi, err = heap("resources.driver.memory", s.Resources.Driver.Memory, l.DriverMemory); err != nil {
+		return v, err
+	}
+	if v.ExecutorHeapMi, err = heap("resources.executors.memory", s.Resources.Executors.Memory, l.ExecutorMemory); err != nil {
+		return v, err
+	}
+	v.MinExecutors, v.MaxExecutors = 0, l.DefaultExecutors
+	if p := s.Resources.Executors.Min; p != nil {
+		v.MinExecutors = *p
+	}
+	if p := s.Resources.Executors.Max; p != nil {
+		v.MaxExecutors = *p
+	}
+	if v.MinExecutors < 0 || v.MaxExecutors < v.MinExecutors || v.MaxExecutors > l.MaxExecutors {
+		return v, invalid("resources.executors: need 0 <= min <= max <= %d", l.MaxExecutors)
+	}
+	v.Duration = l.MaxDuration
+	if s.MaxDuration != "" {
+		d, err := time.ParseDuration(s.MaxDuration)
+		if err != nil || d <= 0 || d > l.MaxDuration {
+			return v, invalid("maxDuration: a duration up to %s", l.MaxDuration)
+		}
+		v.Duration = d
+	}
+	return v, nil
+}
+
+// FootprintMi is the most memory a run's pods can use at once: the driver plus every executor it
+// may scale to. The admission budget (Limits, memoryBudget) is checked against it.
+func (v Validated) FootprintMi() int {
+	return PodMemoryMi(v.DriverHeapMi) + v.MaxExecutors*PodMemoryMi(v.ExecutorHeapMi)
+}
+
+func allowedConfList() []string {
+	var out []string
+	for k, ok := range AllowedConf {
+		if ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ErrNotFound is returned for an unknown run (or one in another workspace).
+var ErrNotFound = errors.New("run not found")

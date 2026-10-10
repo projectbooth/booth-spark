@@ -537,3 +537,67 @@ about each; each is covered by a test.
 - **Integration loads the pinned image's linux/amd64 manifest** (`sha256:7cdb42ed…`), after
   checking that it is that entry of the pinned index (`sha256:bf9d035a…`). `kind load` can't import
   a multi-arch index whose other platforms aren't present locally.
+
+## As built: step 3 (run namespaces, admission policies, applications), 2026-10-10
+
+Items 1, 3, 6 and 7 as ruled in ADR 0110, with the coordinator's step 3 requirements. These are the
+differences from the note, and what the build found. Each is covered by a test.
+
+- **Client mode in a pod, not cluster-mode objects.** The backend creates the driver pod itself. It
+  runs Spark's own `spark-submit --deploy-mode client` against the API server, with every isolating
+  setting fixed by the module (`internal/runs/objects.go`, `DriverArgs`). A caller's `conf` passes
+  through a small allowlist and can't override any of them.
+- **The driver ClusterRole, measured against Spark 4.1.3:**
+  - pods: create, get, list, watch, delete, deletecollection;
+  - configmaps: create, deletecollection (Spark writes its executors' config map);
+  - services and persistentvolumeclaims: deletecollection only.
+
+  The last pair is Spark's shutdown cleanup. Without it every run's log ends in two 403 stack traces.
+  It grants nothing beyond the run's own namespace.
+- **kind's default CNI doesn't enforce egress NetworkPolicy.** On kind v0.33.0 (kindnetd
+  v20260820), ingress policies are enforced. A default-deny egress policy left the API server, the
+  internet, and another namespace's pod and Service all reachable. The real-core job therefore runs
+  kind with Calico v3.33.0 (`test/integration/cni/`, manifest and images pinned by digest), which
+  does enforce egress. This matters beyond this module: no Integration job in the fleet that relies
+  on kindnet has verified an egress denial. booth-pipeline's closed-by-default egress, for one, is
+  only tested from the ingress side.
+- **The API server's address comes from the `kubernetes` EndpointSlice** (v1 Endpoints is
+  deprecated from 1.33). The driver's master URL is that endpoint address, so its NetworkPolicy
+  names exactly it. Under Calico the ClusterIP also works, after DNAT.
+- **Uninstall needs no hook.** Every run namespace has an ownerReference to the chart's
+  `<fullname>-driver` ClusterRole, without `blockOwnerDeletion`. Deleting the chart, by any route,
+  makes the garbage collector delete every run namespace. Helm removes the policies, bindings and
+  ClusterRoles itself.
+- **The backend's cluster-wide rights** are namespaces (create, delete, get, list), rolebindings
+  (create), and bind and get on its two ClusterRoles by name. The fence policy limits every write to
+  its own `bspark-<run>` namespaces. Inside each one it works through a RoleBinding to
+  `<fullname>-run-controller` that it creates there first. It holds no cluster-wide pods, secrets or
+  pods/log.
+- **The pod policy:**
+  - a pod running as `driver` must be created by the backend itself;
+  - every other pod must run as `executor`, with no token mounted;
+  - the allowlisted image, the workspace label and the configured nodeSelector are required on every
+    pod.
+
+  Tolerations and affinity are passed through but not enforced.
+- **The Spark UI proxy is now a default-deny allowlist** (`internal/uiproxy/allow.go`):
+  - the UI tabs and their detail pages, and `/static/`;
+  - every REST endpoint documented for Spark 4.1.3 (26), plus the three the UI's JavaScript calls,
+    read from Spark's sources.
+
+  `testdata/spark-4.1.3-rest-api.txt` records the decision for each. Refused on purpose: the
+  `threads` endpoint, the event-log downloads, and every attempt-id variant. Step 2's
+  `uiProof.runs` table is gone; the proxy looks runs up in the run records, and a run's UI exists
+  only while it runs.
+- **"Open" egress is the internet only.** Every private, CGNAT, link-local, loopback and reserved
+  IPv4 range is excepted. A homelab's LAN is not reachable from a run either. There is no IPv6
+  internet rule, so IPv6 egress is closed in both modes.
+- **The API:**
+  - `main.inlinePython` is the only entry point. `main.python`, `main.jar` and `dataAccess` answer
+    422 until data access (step 5).
+  - Admission returns 429 `at_capacity` and names the limit it hit.
+  - The OpenAPI document is served at `/v1/openapi.yaml` (not `.json`), linted in CI, and kept
+    equal to the routes by a test.
+- **Quota slack:** a run namespace's quota leaves room for one pod beyond the driver and its
+  executors. That is enough for a replacement executor, or for user code's own pod, which the
+  policy still bounds.

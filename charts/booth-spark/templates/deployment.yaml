@@ -16,8 +16,8 @@ spec:
         booth.projectbooth.io/module: spark
     spec:
       serviceAccountName: {{ include "booth-spark.serviceAccountName" . }}
-      # No Kubernetes API access in this step (serviceaccount.yaml).
-      automountServiceAccountToken: false
+      # The backend creates and removes run namespaces with exactly the fenced rights in rbac.yaml.
+      automountServiceAccountToken: true
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.nodeSelector }}
@@ -75,11 +75,21 @@ spec:
             - name: BOOTH_WORKLOAD_ISSUER_URL
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.uiProof.runs }}
-            # TEST ONLY (values.yaml uiProof): build step 2's fixed run table.
-            - name: BOOTH_UI_PROOF_RUNS
-              value: {{ toJson . | quote }}
-            {{- end }}
+            # The run controller (values.yaml runs; docs/design-v0.md item 3).
+            - name: BOOTH_RUNS
+              value: {{ toJson .Values.runs | quote }}
+            - name: BOOTH_INSTANCE
+              value: {{ include "booth-spark.instance" . | quote }}
+            - name: BOOTH_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: BOOTH_SERVICE_ACCOUNT
+              value: {{ include "booth-spark.serviceAccountName" . | quote }}
+            - name: BOOTH_BACKEND_POD_LABELS
+              value: {{ include "booth-spark.selectorLabels" . | fromYaml | toJson | quote }}
+            - name: BOOTH_DRIVER_CLUSTERROLE
+              value: "{{ include "booth-spark.fullname" . }}-driver"
+            - name: BOOTH_RUN_CONTROLLER_CLUSTERROLE
+              value: "{{ include "booth-spark.fullname" . }}-run-controller"
           readinessProbe:
             httpGet:
               path: /healthz

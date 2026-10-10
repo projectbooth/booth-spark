@@ -6,8 +6,9 @@
 //   - Only an allowlist of request headers is forwarded: no X-Booth-*, no Authorization, no Cookie
 //     (core's booth_iframe_session included), no X-Forwarded-*. The driver learns nothing about who
 //     is looking.
-//   - Only GET and HEAD reach it, and the kill, thread-dump and heap-histogram endpoints never do,
-//     whatever the run's Spark configuration says (Blocked).
+//   - Only GET and HEAD reach it, and only paths on a default-deny allowlist (Allowed, allow.go):
+//     the kill, thread-dump and heap-histogram endpoints never do, whatever the run's Spark
+//     configuration says.
 //   - Its responses may not set cookies: the UI is served same-origin with the shell (ADR 0069), so
 //     a Set-Cookie from user code would land on the shell's origin.
 //   - Redirects are rewritten to stay under the run's prefix.
@@ -60,22 +61,6 @@ var forwardedHeaders = []string{
 	"Accept", "Accept-Language", "Cache-Control", "If-Modified-Since", "If-None-Match", "Range", "User-Agent",
 }
 
-// blockedSegments are path segments that never reach a driver. "kill" covers /jobs/job/kill and
-// /stages/stage/kill; "threaddump" and "heaphistogram" the executor pages; "threads" the REST API's
-// /api/v1/applications/<app>/executors/<id>/threads, which Spark 4.1.3 serves with full stack traces
-// even when spark.ui.threadDumpsEnabled is false (found against the pinned image; step 2's notes).
-var blockedSegments = map[string]bool{"kill": true, "threaddump": true, "heaphistogram": true, "threads": true}
-
-// Blocked reports whether the remainder of a UI path (after LocalPrefix) is one this proxy refuses.
-func Blocked(rest string) bool {
-	for _, seg := range strings.Split(strings.ToLower(rest), "/") {
-		if blockedSegments[seg] {
-			return true
-		}
-	}
-	return false
-}
-
 // BadPath reports whether an escaped request path tries to smuggle a separator, a NUL or a dot
 // segment past the routing (the same rules as booth-core's gateway and booth-streamlit's proxy).
 func BadPath(escaped string) bool {
@@ -92,7 +77,7 @@ func BadPath(escaped string) bool {
 }
 
 // Serve proxies r, whose path is LocalPrefix(run.ID)+rest, to the run's driver. The caller has
-// already authorized the request and checked Blocked and BadPath.
+// already authorized the request and checked Allowed and BadPath.
 func Serve(w http.ResponseWriter, r *http.Request, run Run, target *url.URL) {
 	local := LocalPrefix(run.ID)
 	base := BasePath(run.ID)

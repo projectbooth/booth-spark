@@ -10,24 +10,53 @@ the six steps listed there, one PR each.
 
 ## Status
 
-Step 2 of 6: the backend with its health checks and manifest, the chart, CI, the identity code, and
-the Spark UI proxy, proven against a real driver. The module doesn't start drivers yet (step 3).
+Step 3 of 6: batch applications run, each in its own namespace, through the `/v1` API, and each
+run's Spark UI opens in the shell for its submitter. Not yet: sessions and idle shutdown (step 4),
+data access (step 5), the module's own UI and operations doc (step 6).
 
-| Route | Reached through | Credential | What it does now |
+| Route | Reached through | Credential | What it does |
 |---|---|---|---|
 | `/livez`, `/healthz` | the kubelet, booth-core's health poll | none | liveness; readiness (the module's own database) |
-| `/v1/*` | core's gateway, `/modules/spark/v1/…` | a bearer token: a person's OIDC token, or core's workload token | `GET /v1/me`: who the caller is, as this module derived it |
-| everything else | core's iframe proxy, `/iframe/spark/…` | core's `X-Booth-Identity` assertion | the module's page; `GET /ui/api/me`; `/runs/<id>/ui/…`, a run's Spark UI, for its submitter only (read-only, kill and thread-dump actions refused) |
+| `/v1/*` | core's gateway, `/modules/spark/v1/…` | a bearer token: a person's OIDC token, or core's workload token | the job-submission API (`internal/api/openapi/v1.yaml`, also served at `/v1/openapi.yaml`) |
+| everything else | core's iframe proxy, `/iframe/spark/…` | core's `X-Booth-Identity` assertion | the module's page; `/runs/<id>/ui/…`, a run's Spark UI, for its submitter only (read-only, default-deny allowlist) |
 
-Each credential works on its own route group only (docs/design-v0.md item 2).
+## How a run is isolated
+
+A run is a namespace, `bspark-<id>`, holding its driver and executors, deleted when the run ends.
+It is labelled for its workspace (ADR 0077), enforces Pod Security `restricted`, has a quota and a
+limit range, and default-deny NetworkPolicies: its own pods talk to each other, DNS, the driver
+(only the driver) to the API server, the backend's pods (only they) to the driver's UI, and, with
+`runs.egress.mode=open` (the default), the internet and never a private or cluster range. Two
+ValidatingAdmissionPolicies fence it: pods in a run namespace use only the allowlisted image,
+carry their workspace's label and the configured nodeSelector, and run as the `executor` account
+with no token unless booth-spark itself creates the driver; and the backend's own cluster-wide
+rights reach only its own namespaces. Every run namespace is owned by the chart's driver
+ClusterRole, so uninstalling the chart, by any route, deletes them all.
+
+## Known residuals (stated plainly)
+
+- **User code can reach the Kubernetes API server.** A run's driver runs the submitter's own code
+  and holds a Kubernetes account, because Spark asks the API for its executors (ADR 0110 ruling 3,
+  a documented departure from ADR 0057). That account may only manage pods and config maps in the
+  run's own namespace, and the admission policy limits what pods it can create, but the API server
+  itself is reachable from user code: an API-server vulnerability would be within its reach.
+- **Open egress.** With `runs.egress.mode=open` (the default, the user's choice in ADR 0110), a
+  run's code can send anything it can read to any internet host. Set `runs.egress.mode=closed`, or
+  `submit.minRole=owner`, where editors aren't trusted.
+- **NetworkPolicy depends on the CNI.** The isolation above needs a CNI that enforces NetworkPolicy,
+  egress included. k3s's does. kind's default (kindnet) enforces ingress but not egress, which is why
+  Integration runs kind with Calico.
+- **A run's code can spend its quota** on pods running the allowlisted image in its own namespace;
+  that is no more than it can already do itself.
 
 ## Configuration
 
 `charts/booth-spark/values.yaml` documents every value. The identity settings are the fleet's:
 `oidc.issuerUrl`, `oidc.clientId`, `oidc.requireAudience`, `oidc.groupsClaim`, `oidc.jwksUrl`
 (ADR 0108), `oidc.workloadIssuerUrl` (ADR 0056), and `identity.issuerUrl` (core's iframe-identity
-issuer, ADR 0069). `submit.minRole` (`editor` or `owner`) is the submit floor (ADR 0110). The chart
-requires Kubernetes 1.30 or later, with `ValidatingAdmissionPolicy` served.
+issuer, ADR 0069). `submit.minRole` (`editor` or `owner`) is the submit floor (ADR 0110). `runs.*`
+sizes, places and fences the runs. The chart requires Kubernetes 1.30 or later, with
+`ValidatingAdmissionPolicy` served.
 
 ## Development
 
@@ -37,6 +66,7 @@ eval "$(sh hack/test-env.sh)"
 go test ./...                      # unit + contract (contract needs helm)
 ```
 
-CI (`.github/workflows/ci.yml`) runs those on every push and PR. Integration
-(`.github/workflows/integration.yml`, `test/integration/README.md`) runs on kind against stand-ins
-and against a real booth-core and Keycloak, on PRs, on `main`, nightly and by hand.
+CI (`.github/workflows/ci.yml`) runs those, and lints the OpenAPI document, on every push and PR.
+Integration (`.github/workflows/integration.yml`, `test/integration/README.md`) runs on kind against
+stand-ins and against a real booth-core and Keycloak (with Calico), on PRs, on `main`, nightly and
+by hand.

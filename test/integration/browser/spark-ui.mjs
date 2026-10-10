@@ -3,18 +3,18 @@
 // (standing in for the shell, which is same-origin with core by construction, ADR 0069), the way
 // booth-streamlit's browser test does.
 //
-//   node spark-ui.mjs <core base URL> <submitter's iframe URL> <operator's iframe URL>
+//   node spark-ui.mjs <core base URL> <submitter's iframe URL> <operator's iframe URL> <run id>
 //
 // The iframe URLs are core's own (GET /api/modules/spark/iframe-url), minted in-cluster a moment
 // earlier from real Keycloak tokens; core's navigation token is valid for one minute.
 import { chromium } from "playwright";
 
-const [base, submitterURL, operatorURL] = process.argv.slice(2);
-if (!base || !submitterURL || !operatorURL) {
-  console.error("usage: node spark-ui.mjs <core base URL> <submitter iframe URL> <operator iframe URL>");
+const [base, submitterURL, operatorURL, runID] = process.argv.slice(2);
+if (!base || !submitterURL || !operatorURL || !runID) {
+  console.error("usage: node spark-ui.mjs <core base URL> <submitter iframe URL> <operator iframe URL> <run id>");
   process.exit(2);
 }
-const prefix = "/iframe/spark/runs/proof-1/ui";
+const prefix = `/iframe/spark/runs/${runID}/ui`;
 // Core issues /iframe/spark/?<token>; its entry handler accepts any path under the module, so
 // point the same token at the run's UI.
 const toRun = (u) => u.replace(/^\/iframe\/spark\/\?/, `${prefix}/?`);
@@ -64,9 +64,15 @@ try {
   check(true, "the Executors tab loaded its table from the REST API (driver row)");
 
   await ui.getByRole("link", { name: "Environment" }).click();
-  await ui.getByText("spark.booth.proof.token").first().waitFor({ timeout: 30_000 });
+  await ui.getByText("spark.kubernetes.authenticate.oauthTokenFile").first().waitFor({ timeout: 30_000 });
   const envText = (await ui.locator("body").textContent()) ?? "";
-  check(!envText.includes("proof-value-must-not-appear"), "the Environment page redacts a secret-named conf value");
+  check(!envText.includes("/var/run/secrets/kubernetes.io/serviceaccount/token"), "the Environment page redacts a token-named conf value");
+
+  await ui.getByRole("link", { name: "Stages" }).click();
+  await ui.locator("table").first().waitFor({ timeout: 30_000 });
+  await ui.locator("a[href*='/stages/stage/']").first().click();
+  await ui.getByText("Summary Metrics").first().waitFor({ timeout: 60_000 });
+  check(true, "a stage's detail page loaded (its task table comes from the REST API)");
 
   await ui.getByRole("link", { name: "SQL / DataFrame" }).click();
   await ui.getByText("collect").first().waitFor({ timeout: 30_000 });
