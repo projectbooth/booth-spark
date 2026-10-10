@@ -133,6 +133,7 @@ jobs:
           kind load docker-image booth-core:ci booth-spark:ci booth-spark-runtime:ci --name booth-spark-realcore
 
       - name: Deploy Keycloak, booth-core and booth-spark (runs on the pinned Spark image)
+        id: deploy
         run: test/integration/deploy-realcore.sh booth-core booth-core:ci booth-spark:ci booth-spark-runtime:ci
 
       - name: Verify (including the REAL_CORE checks)
@@ -152,19 +153,26 @@ jobs:
       - name: Install Chromium for the browser checks
         run: cd test/integration/browser && npm ci && npx playwright install --with-deps chromium
 
+      # The step 3 checks below each run even when an earlier one failed (the job still fails), so
+      # one run reports on all of them; uninstall.sh runs last because it removes booth-spark.
       - name: "Runs (docs/design-v0.md items 3, 6, 7): an application with real executors in its own namespace, roles, failure, stop, admission"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/runs.sh
 
       - name: "Isolation (item 3): run A against run B, the run-pods policy, the driver UI port, the backend's fence, the executor account"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/isolation.sh
 
       - name: "The Spark UI path (item 5): a real run's UI through core, submitter only, allowlist, Chromium"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/ui-path.sh
 
       - name: "Egress (ADR 0110): open is the internet only; closed is not even that"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/egress.sh booth-spark:ci booth-spark-runtime:ci
 
       - name: "Uninstall (ADR 0110 ruling 2): helm uninstall, and booth-core's module uninstall, leave nothing behind"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/uninstall.sh booth-spark:ci booth-spark-runtime:ci
 
       - name: Dump state on failure

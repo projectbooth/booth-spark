@@ -83,15 +83,19 @@ ns_gone "bspark-$long"
 echo "ok: stopped and cleaned up"
 
 step "admission refuses a run that doesn't fit the memory budget"
-v1 "$T_editor" POST /applications "$(app_json big "print(1)" '{"resources":{"driver":{"memory":"2g"},"executors":{"min":2,"max":2,"memory":"2g"}}}')"
-[ "$code" = 201 ] || [ "$code" = 429 ] || fail "big run: $code $body"
-if [ "$code" = 201 ]; then
-  big=$(echo "$body" | jq_ "d['id']")
-  v1 "$T_editor" POST /applications "$(app_json big2 "print(1)" '{"resources":{"driver":{"memory":"2g"},"executors":{"min":2,"max":2,"memory":"2g"}}}')"
-  [ "$code" = 429 ] || fail "a second big run fit a 10Gi budget: $code $body"
-  v1 "$T_editor" POST "/applications/$big/stop"
-fi
-echo "$body" | grep -q at_capacity || fail "no at_capacity: $body"
-echo "ok: refused (429 at_capacity)"
+# Each needs up to 3 x 2867Mi = 8601Mi (sized by max executors, none started): one fits the test's
+# 10Gi budget, a second doesn't.
+big_spec='{"resources":{"driver":{"memory":"2g"},"executors":{"min":0,"max":2,"memory":"2g"}}}'
+v1 "$T_editor" POST /applications "$(app_json big "import time; time.sleep(120)" "$big_spec")"
+[ "$code" = 201 ] || fail "the first big run didn't fit: $code $body"
+big=$(echo "$body" | jq_ "d['id']")
+v1 "$T_editor" POST /applications "$(app_json big2 "print(1)" "$big_spec")"
+refused_code=$code refused_body=$body
+v1 "$T_editor" POST "/applications/$big/stop" >/dev/null
+[ "$refused_code" = 429 ] || fail "a second big run fit a 10Gi budget: $refused_code $refused_body"
+echo "$refused_body" | grep -q '"code":"at_capacity"' || fail "no at_capacity: $refused_body"
+echo "$refused_body" | grep -q 'runs.memoryBudget' || fail "the refusal doesn't name the budget: $refused_body"
+echo "ok: refused (429 at_capacity, runs.memoryBudget)"
+wait_state "$T_editor" "$big" stopped >/dev/null
 
 echo "all run lifecycle checks passed"
