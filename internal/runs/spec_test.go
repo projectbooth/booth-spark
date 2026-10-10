@@ -1,7 +1,6 @@
 package runs
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -36,9 +35,11 @@ func TestValidate_Refusals(t *testing.T) {
 		{"bad name", func(s *Spec) { s.Name = "../x" }, false},
 		{"no code", func(s *Spec) { s.Main.InlinePython = " " }, false},
 		{"huge code", func(s *Spec) { s.Main.InlinePython = strings.Repeat("x", 300<<10) }, false},
-		{"a file from storage", func(s *Spec) { s.Main.Python = json.RawMessage(`{"backendId":"b","path":"p.py"}`) }, true},
-		{"a jar", func(s *Spec) { s.Main.Jar = json.RawMessage(`{}`) }, true},
-		{"data access", func(s *Spec) { s.DataAccess = json.RawMessage(`{"database":true}`) }, true},
+		{"a file from storage", func(s *Spec) { s.Main.InlinePython, s.Main.Python = "", &FileRef{BackendID: "b", Path: "p.py"} }, true},
+		{"a jar", func(s *Spec) {
+			s.Main.InlinePython, s.Main.Jar, s.Main.MainClass = "", &FileRef{BackendID: "b", Path: "a.jar"}, "a.Main"
+		}, true},
+		{"data access", func(s *Spec) { s.DataAccess = &DataAccess{Database: true} }, true},
 		{"too many executors", func(s *Spec) { s.Resources.Executors.Max = intp(3) }, false},
 		{"min above max", func(s *Spec) { s.Resources.Executors.Min = intp(2); s.Resources.Executors.Max = intp(1) }, false},
 		{"negative", func(s *Spec) { s.Resources.Executors.Min = intp(-1) }, false},
@@ -66,11 +67,11 @@ func TestValidate_Refusals(t *testing.T) {
 			}
 		})
 	}
-	for _, empty := range []string{``, `null`, `{}`} {
+	for _, empty := range []*DataAccess{nil, {}} {
 		s := ok()
-		s.DataAccess = json.RawMessage(empty)
+		s.DataAccess = empty
 		if _, err := Validate(s, testLimits()); err != nil {
-			t.Errorf("dataAccess %q refused: %v", empty, err)
+			t.Errorf("dataAccess %+v refused: %v", empty, err)
 		}
 	}
 }

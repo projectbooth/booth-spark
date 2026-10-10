@@ -15,9 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/projectbooth/booth-spark/internal/agent"
 	"github.com/projectbooth/booth-spark/internal/api"
 	"github.com/projectbooth/booth-spark/internal/auth"
 	"github.com/projectbooth/booth-spark/internal/config"
+	"github.com/projectbooth/booth-spark/internal/dataaccess"
 	"github.com/projectbooth/booth-spark/internal/db"
 	"github.com/projectbooth/booth-spark/internal/identity"
 	"github.com/projectbooth/booth-spark/internal/runs"
@@ -29,6 +31,13 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 func main() {
+	// In a data run's pods the same binary is the agent (internal/agent): no database, no config.
+	if len(os.Args) > 1 && os.Args[1] == "agent" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := agent.Main(ctx, os.Args[2:])
+		stop()
+		os.Exit(code)
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -90,12 +99,34 @@ func run() error {
 		}}
 		ctrl := &runs.Controller{Store: store, Cluster: launcher, Interval: 3 * time.Second,
 			PendingTimeout: rc.PendingTimeoutD, LogTailBytes: 1 << 20, ResultRetention: cfg.SessionResultRetention, Now: time.Now}
+		if d := cfg.Data; d != nil {
+			// Data access (docs/design-v0.md item 4): one token per run, minted here and served to
+			// the run's agents on the internal port, which run namespaces alone reach.
+			tokens := &dataaccess.Tokens{Minter: &dataaccess.CoreMinter{URL: d.MintURL, Credential: d.MintCredential}, MaxAge: d.RefreshMaxD}
+			ctrl.Data = &dataaccess.Planner{Tokens: tokens, CoreURL: d.CoreURL}
+			launcher.Cluster.Data = &runs.DataCluster{
+				AgentImage: d.AgentImage, SidecarImage: d.Sidecar.Image, InternalURL: d.InternalURL, InternalPort: d.InternalPort,
+				Database: d.Database.Egress, ObjectStore: d.ObjectStore.Egress, RefreshMax: d.RefreshMax,
+			}
+			internal := &http.Server{Addr: d.InternalAddr, ReadHeaderTimeout: 10 * time.Second,
+				Handler: (&dataaccess.Internal{Store: store, Tokens: tokens, CoreURL: d.CoreURL}).Router()}
+			go func() {
+				<-ctx.Done()
+				_ = internal.Close()
+			}()
+			go func() {
+				log.Printf("data access: internal port on %s; database=%t lakehouse=%t storage=%t", d.InternalAddr, d.Database.Enabled, d.Lakehouse.Enabled, d.Storage.Enabled)
+				if err := internal.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Fatalf("internal port: %v", err)
+				}
+			}()
+		}
 		go ctrl.Run(ctx)
 		deps.Applications = &api.Applications{
 			Store: store,
 			Limits: runs.Limits{MaxExecutors: rc.MaxExecutors, DefaultExecutors: rc.DefaultExecutors,
 				DriverMemory: rc.Driver.Memory, ExecutorMemory: rc.Executor.Memory, MaxMemory: rc.MaxMemory, MaxDuration: rc.MaxDurationD,
-				SessionIdleTimeout: cfg.SessionIdleTimeout, SessionMaxLifetime: cfg.SessionMaxLifetime},
+				SessionIdleTimeout: cfg.SessionIdleTimeout, SessionMaxLifetime: cfg.SessionMaxLifetime, Data: cfg.Data.Limits()},
 			Admission: runs.Admission{MaxRunning: rc.MaxRunning, MaxRunningPerWorkspace: rc.MaxRunningPerWorkspace, MemoryBudgetMi: rc.MemoryBudgetMi},
 			LiveLogs: func(ctx context.Context, ns string, tail int64) (string, error) {
 				return launcher.Logs(ctx, ns, tail, 1<<20)

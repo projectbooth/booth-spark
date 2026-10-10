@@ -35,10 +35,12 @@ type sessionView struct {
 	MaxLifetime string `json:"maxLifetime"`
 	// UIPath is where the session's Spark UI opens in the shell while it runs (its submitter only).
 	UIPath string `json:"uiPath,omitempty"`
+	// DataAccess is what the session asked for and, once it launched, what it got.
+	DataAccess *dataView `json:"dataAccess,omitempty"`
 }
 
 func sview(r runs.Run) sessionView {
-	v := sessionView{Run: r}
+	v := sessionView{Run: r, DataAccess: dview(r)}
 	v.Resources.DriverMemory = strconv.Itoa(r.Spec.DriverHeapMi) + "m"
 	v.Resources.ExecutorMemory = strconv.Itoa(r.Spec.ExecutorHeapMi) + "m"
 	v.Resources.MinExecutors = r.Spec.MinExecutors
@@ -69,6 +71,15 @@ func maySeeSession(id auth.Identity, s runs.Run) bool {
 	return s.Submitter == id.Subject || id.Role == auth.RoleOwner
 }
 
+// dataBearer is a new run's data bearer when it needs data access: what its agents present to fetch
+// its token. 32 random bytes, like a session's runner bearer.
+func dataBearer(v runs.Validated) string {
+	if !v.NeedsData() {
+		return ""
+	}
+	return newSessionToken()
+}
+
 func newSessionToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -96,7 +107,7 @@ func (a Applications) createSession(minRole auth.Role) http.HandlerFunc {
 			apiError(w, http.StatusBadRequest, "invalid", "body: "+err.Error())
 			return
 		}
-		if id.Workload && len(strings.TrimSpace(string(spec.DataAccess))) > 0 && string(spec.DataAccess) != "null" {
+		if id.Workload && spec.DataAccess.Any() {
 			apiError(w, http.StatusUnprocessableEntity, "unavailable", "a session started with a workload token has no data access in this version (ADR 0110)")
 			return
 		}
@@ -119,7 +130,7 @@ func (a Applications) createSession(minRole auth.Role) http.HandlerFunc {
 		s, err := a.Store.Create(r.Context(), runs.Run{
 			ID: runID, Kind: "session", Workspace: id.Workspace, Submitter: id.Subject, SubmitterName: id.DisplayName,
 			Workload: id.Workload, Name: spec.Name, Namespace: runs.NamespacePrefix + runID, FootprintMi: v.FootprintMi(), Spec: v,
-			SessionToken: newSessionToken(),
+			SessionToken: newSessionToken(), DataBearer: dataBearer(v),
 		}, key, a.Admission)
 		var capErr runs.ErrAtCapacity
 		switch {

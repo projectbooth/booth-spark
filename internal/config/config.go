@@ -54,6 +54,9 @@ type Config struct {
 	SessionMaxLifetime time.Duration
 	// SessionResultRetention is how long an ended run's content is kept (sessions.resultRetention).
 	SessionResultRetention time.Duration
+
+	// Data is the runs' data access (dataAccess, docs/design-v0.md item 4). Nil: off.
+	Data *DataAccess
 }
 
 // Runs configures the run controller (docs/design-v0.md items 3, 7 and 8).
@@ -155,6 +158,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("BOOTH_RUNS: %w", err)
 		}
 		cfg.Runs = r
+	}
+	if v := os.Getenv("BOOTH_DATA_ACCESS"); v != "" {
+		d, err := loadData(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("BOOTH_DATA_ACCESS: %w", err)
+		}
+		cfg.Data = d
 	}
 	return cfg, nil
 }

@@ -58,6 +58,10 @@ type Run struct {
 	// ContentClearedAt is when the run's content (its log tail; a session's statement code, output
 	// and error) was cleared, sessions.resultRetention after it ended.
 	ContentClearedAt *time.Time `json:"contentClearedAt,omitempty"`
+	// DataBearer is what the run's agents present to fetch its workload token. Never shown.
+	DataBearer string `json:"-"`
+	// Data is the run's data access as resolved before its launch (nil until then, or with none).
+	Data *DataPlan `json:"-"`
 }
 
 //go:embed migrations/*.sql
@@ -141,16 +145,22 @@ func NewID() string {
 
 const runColumns = `id, kind, workspace, submitter, submitter_name, workload, name, state, reason, namespace,
 	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token,
-	content_cleared_at`
+	content_cleared_at, data_bearer, data`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var r Run
-	var spec []byte
+	var spec, data []byte
 	err := row.Scan(&r.ID, &r.Kind, &r.Workspace, &r.Submitter, &r.SubmitterName, &r.Workload, &r.Name, &r.State,
 		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched,
-		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt)
+		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data)
 	if err != nil {
 		return r, err
+	}
+	if len(data) > 0 && string(data) != "null" {
+		r.Data = &DataPlan{}
+		if err := json.Unmarshal(data, r.Data); err != nil {
+			return r, fmt.Errorf("run %s: data: %w", r.ID, err)
+		}
 	}
 	if err := json.Unmarshal(spec, &r.Spec); err != nil {
 		return r, fmt.Errorf("run %s: spec: %w", r.ID, err)
@@ -203,9 +213,10 @@ func (s *Store) Create(ctx context.Context, r Run, idempotencyKey string, a Admi
 		}
 		var err error
 		out, err = scanRun(tx.QueryRow(ctx, `INSERT INTO runs (id, kind, workspace, submitter, submitter_name, workload, name, state, namespace, footprint_mi, spec, idempotency_key,
-				session_token, last_activity_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12, CASE WHEN $2 = 'session' THEN now() END) RETURNING `+runColumns,
-			r.ID, r.Kind, r.Workspace, r.Submitter, r.SubmitterName, r.Workload, r.Name, r.Namespace, r.FootprintMi, spec, key, r.SessionToken))
+								session_token, last_activity_at, data_bearer)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12, CASE WHEN $2 = 'session' THEN now() END, $13) RETURNING `+runColumns,
+			r.ID, r.Kind, r.Workspace, r.Submitter, r.SubmitterName, r.Workload, r.Name, r.Namespace, r.FootprintMi, spec, key, r.SessionToken,
+			r.DataBearer))
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrDuplicate
@@ -295,7 +306,7 @@ func (s *Store) RequestStop(ctx context.Context, id string) error {
 func (s *Store) ClearContent(ctx context.Context, before, at time.Time) (int, error) {
 	n := 0
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', content_cleared_at = $2
+		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', data_bearer = '', content_cleared_at = $2
 			WHERE finished_at IS NOT NULL AND finished_at < $1 AND content_cleared_at IS NULL RETURNING id`, before, at)
 		if err != nil {
 			return err
@@ -309,6 +320,29 @@ func (s *Store) ClearContent(ctx context.Context, before, at time.Time) (int, er
 		return err
 	})
 	return n, err
+}
+
+// SetDataPlan records a run's resolved data access (before its launch).
+func (s *Store) SetDataPlan(ctx context.Context, id string, p DataPlan) error {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `UPDATE runs SET data = $2 WHERE id = $1`, id, raw)
+	return err
+}
+
+// ByDataBearer finds the live run whose agents present bearer. ErrNotFound for none, or for a run
+// that has ended: an ended run's bearer opens nothing.
+func (s *Store) ByDataBearer(ctx context.Context, bearer string) (Run, error) {
+	if bearer == "" {
+		return Run{}, ErrNotFound
+	}
+	r, err := scanRun(s.db.QueryRow(ctx, `SELECT `+runColumns+` FROM runs WHERE data_bearer = $1 AND state IN ('pending', 'running')`, bearer))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Run{}, ErrNotFound
+	}
+	return r, err
 }
 
 // LogTail returns the driver log kept when the run ended.
