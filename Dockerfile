@@ -3,13 +3,17 @@
 # each run's driver and executor pods, from the Spark runtime image (docs/design-v0.md item 1).
 # Every base image is pinned by digest (resolved 2026-10-09; test/contract checks it).
 
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
+# The Go build runs on the build machine's own platform and cross-compiles (release.yml builds
+# linux/amd64 and linux/arm64).
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
+ARG TARGETOS=linux
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/booth-spark ./cmd/spark
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/booth-spark ./cmd/spark
 
 # Distroless static + nonroot (uid/gid 65532): no shell, no package manager; the chart pins the
 # same uid.
