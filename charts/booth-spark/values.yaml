@@ -142,6 +142,56 @@ sessions:
   maxLifetime: 12h
   resultRetention: 168h
 
+# Data access (docs/design-v0.md item 4; ADR 0110): a run reads and writes data as its submitter,
+# capped at editor (a submitter demoted to viewer since gets read only). Off by default. Turning it
+# on:
+#   - declares `workloadIdentity: {mint: true}` on the manifest, so booth-core delivers the
+#     booth-workload-minting-credentials Secret this module mints each run's token with
+#     (spark:<workspace>:<runId>, owner the submitter, roleCeiling editor);
+#   - opens the backend's internal port (8081) to this install's run namespaces only: each run's
+#     agents fetch its token there, the credential sidecars send their broker calls there and
+#     Iceberg's REST catalog goes there, so no run pod has a route to booth-core;
+#   - needs runs.image to be booth-spark's runtime image (images/spark-runtime: JDBC, Iceberg, S3A
+#     and two module helpers), not plain apache/spark.
+# A refused re-mint (the submitter lost their role, or hasn't signed in for 7 days) ends the run and
+# deletes its namespace. Copied S3 keys stay valid until their lease expires (design residual 2).
+dataAccess:
+  enabled: false
+  # booth-core's in-cluster address: the broker (/api/credentials) and the gateway (/modules/...).
+  coreUrl: http://booth-core.booth-system.svc:8080
+  # booth-core's credential sidecar (ADR 0095), digest-pinned: the digest booth-streamlit,
+  # booth-api, booth-notebooks and booth-pipeline pin.
+  sidecar:
+    image: ghcr.io/projectbooth/credential-sidecar@sha256:6a0a795efd27f165e0714beb163d91f5c2feff55cfdc6f287aee979ae02cce14
+  # booth-database is installed: a run asking for `database` gets the postgres sidecar in every pod
+  # (JDBC reads run on executors), DATABASE_URL and JDBC_DATABASE_URL, and an egress rule to
+  # booth-database's Postgres pods (match your install's namespace and labels).
+  database:
+    enabled: false
+    egress:
+      namespaceSelector: {kubernetes.io/metadata.name: booth-database}
+      podSelector: {app.kubernetes.io/name: booth-database, app.kubernetes.io/component: postgres}
+      port: 5432
+  # booth-lakehouse is installed: a run asking for `lakehouse` gets the workspace's warehouse as the
+  # Iceberg catalog "lakehouse" (s3:// table locations, read and write for an editor's run).
+  lakehouse:
+    enabled: false
+  # booth-storage is installed: a run may name up to 4 {backendId, path} locations (s3a://, one per
+  # bucket in this version), and start from a Python file or a JAR there.
+  storage:
+    enabled: false
+  # The object store Spark reads and writes directly (the warehouse's and the locations'). For one in
+  # the cluster (e.g. MinIO), set its selectors and port to add an egress rule; an external store
+  # (AWS S3) is reached through runs.egress.mode=open instead. Empty podSelector: no rule.
+  objectStore:
+    egress:
+      namespaceSelector: {}
+      podSelector: {}
+      port: 9000
+  # Test knob: re-mint tokens, and re-fetch them in run pods, at least this often (e.g. 20s), so a
+  # lost submitter is noticed in seconds. Empty (default): two thirds of a token's life (~6.7m).
+  refreshMax: ""
+
 # Run records live in this module's own database on the shared PostgreSQL cluster (ADR 0014).
 #
 # By default booth-core provisions it (ADR 0053/0054): the BoothModule declares

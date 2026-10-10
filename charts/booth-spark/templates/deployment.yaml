@@ -34,13 +34,19 @@ spec:
       {{- end }}
       containers:
         - name: booth-spark
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "booth-spark.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: 8080
+            {{- if .Values.dataAccess.enabled }}
+            # The internal port: this install's run namespaces only (networkpolicy.yaml), never
+            # through booth-core.
+            - name: internal
+              containerPort: 8081
+            {{- end }}
           env:
             - name: BOOTH_HTTP_ADDR
               value: ":8080"
@@ -84,6 +90,23 @@ spec:
               value: {{ .Values.sessions.maxLifetime | quote }}
             - name: BOOTH_SESSION_RESULT_RETENTION
               value: {{ .Values.sessions.resultRetention | quote }}
+            {{- if .Values.dataAccess.enabled }}
+            # Data access (values.yaml dataAccess; docs/design-v0.md item 4).
+            - name: BOOTH_DATA_ACCESS
+              value: {{ toJson .Values.dataAccess | quote }}
+            - name: BOOTH_WORKLOAD_MINT_URL
+              valueFrom:
+                secretKeyRef: {name: booth-workload-minting-credentials, key: url}
+            - name: BOOTH_WORKLOAD_MINT_CREDENTIAL
+              valueFrom:
+                secretKeyRef: {name: booth-workload-minting-credentials, key: credential}
+            - name: BOOTH_AGENT_IMAGE
+              value: {{ include "booth-spark.image" . | quote }}
+            - name: BOOTH_INTERNAL_ADDR
+              value: ":8081"
+            - name: BOOTH_INTERNAL_URL
+              value: {{ include "booth-spark.internalUrl" . | quote }}
+            {{- end }}
             - name: BOOTH_INSTANCE
               value: {{ include "booth-spark.instance" . | quote }}
             - name: BOOTH_NAMESPACE
