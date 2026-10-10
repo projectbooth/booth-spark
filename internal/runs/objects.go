@@ -225,14 +225,15 @@ func restrictedContainer() *corev1.SecurityContext {
 	}
 }
 
+// scratchVolumes are the writable directories of a run's pods (their root filesystems are read
+// only): /tmp, which is also spark.local.dir, and Spark's work dir.
 func scratchVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
-	return []corev1.Volume{
-		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr(resource.MustParse("1Gi"))}}},
-		{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr(resource.MustParse("1Gi"))}}},
-	}, []corev1.VolumeMount{
-		{Name: "tmp", MountPath: "/tmp"},
-		{Name: "work", MountPath: "/opt/spark/work-dir"},
+	empty := func() corev1.VolumeSource {
+		return corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr(resource.MustParse("1Gi"))}}
 	}
+	vols := []corev1.Volume{{Name: "tmp", VolumeSource: empty()}, {Name: "work", VolumeSource: empty()}}
+	mounts := []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp"}, {Name: "work", MountPath: "/opt/spark/work-dir"}}
+	return vols, mounts
 }
 
 // executorTemplate is Spark's executor pod template (spark.kubernetes.executor.podTemplateFile):
