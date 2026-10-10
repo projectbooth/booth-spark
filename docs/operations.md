@@ -1,8 +1,176 @@
 # booth-spark operations
 
-This is the operator's doc for booth-spark (ADR 0110). Build step 6 completes it: placement, the
-second-node recipe, egress, residuals 1 to 6 of `docs/design-v0.md` item 4, and the UI. Until
-then, this page holds the limits the coordinator ruled must be written down.
+The operator's doc for booth-spark (ADR 0110): what it needs, how to install and size it, where its
+runs land, what it protects and what it doesn't, and what to do when a run won't start. The design
+is `docs/design-v0.md`; the `/v1` interface is `internal/api/openapi/v1.yaml`, also served at
+`/modules/spark/v1/openapi.yaml`.
+
+## What it is
+
+One always-on backend (the controller, `/v1`, the module's UI and the Spark UI proxy) and, for each
+run, a namespace of its own: `bspark-<run>`, holding one driver and 0 to `runs.maxExecutors`
+executors. A run is a batch application or an interactive session. Its namespace is deleted when it
+ends. No Spark Operator; nothing outside Booth reaches a run (no Spark Connect, spark-submit, JDBC
+or Thrift endpoint).
+
+The module's UI opens in the shell (Manage, Spark): the workspace's applications and their state
+for everyone in it; submitting, sessions and statements for editors and owners (`submit.minRole`).
+A run's driver log is shown as text, never rendered. A run's Spark UI opens for its submitter only
+(below).
+
+## Requirements
+
+- **Kubernetes 1.30 or later, with `ValidatingAdmissionPolicy` served.** Every run namespace is
+  fenced by two admission policies; the chart refuses a cluster without them.
+- **A CNI that enforces NetworkPolicy, egress included.** Isolation between runs, the internet-only
+  egress rule and the backend's internal port all depend on it. k3s's default does. kind's default
+  (kindnet) does not enforce egress; booth-spark's Integration runs on Calico.
+- **booth-core** (it registers the module, provisions its database, signs the iframe assertion and,
+  with data access on, mints run tokens).
+- With data access: booth-database, booth-lakehouse and/or booth-storage, each optional.
+
+## Install
+
+Through booth-core's module install, or with Helm into its own namespace:
+
+```sh
+helm install booth-spark charts/booth-spark -n booth-spark --create-namespace \
+  --set oidc.issuerUrl=https://keycloak.example/realms/booth --set oidc.clientId=booth-design
+```
+
+Released images are on GHCR, built for linux/amd64 and linux/arm64: `ghcr.io/projectbooth/booth-spark`
+(the backend) and `ghcr.io/projectbooth/booth-spark-runtime` (every run's Spark, the `runs.image`
+default, pinned by digest). The chart is attached to each GitHub release.
+
+The values an operator usually sets:
+
+| Value | Default | What it does |
+|---|---|---|
+| `oidc.issuerUrl`, `oidc.clientId` | empty | `/v1` verifies tokens against them; empty, `/v1` answers 503 (the UI still works) |
+| `oidc.workloadIssuerUrl` | empty | also accept booth-core's workload tokens on `/v1` (a pipeline task); their runs get no data access |
+| `submit.minRole` | `editor` | the lowest role that may submit or start a session: `editor` or `owner`; viewers never |
+| `runs.maxRunning`, `runs.maxRunningPerWorkspace` | 2, 1 | live runs at once, install-wide and per workspace |
+| `runs.memoryBudget` | 4Gi | the memory all live runs may use together, each at its largest |
+| `runs.maxExecutors`, `runs.defaultExecutors` | 2, 2 | executors per run |
+| `runs.maxMemory` | 2g | the largest heap a caller may ask for, driver or executor |
+| `runs.maxDuration` | 6h | an application is stopped after this long |
+| `runs.egress.mode` | `open` | `open`: the internet and nothing else of the network; `closed`: not even that |
+| `runs.driver.*`, `runs.executor.*` | | memory, CPU and placement of each kind of pod (below) |
+| `sessions.idleTimeout`, `sessions.maxLifetime` | 20m, 12h | a session is stopped when idle that long, and after its lifetime regardless |
+| `sessions.resultRetention` | 168h | an ended run's content is cleared after this long (below) |
+| `dataAccess.*` | off | runs read and write data as their submitter (below) |
+
+## Sizing and admission
+
+The defaults fit a machine with about 4 GB free. A default pod is 896Mi (a 512m heap plus Spark's
+384Mi overhead); a default run, the driver and 2 executors, is about 2.6Gi at its largest. With data
+access, every pod of a run also holds its agent (32Mi) and one 64Mi credential sidecar per data path.
+
+The backend admits a run only if its largest footprint (driver, every executor it may scale to, and
+their sidecars) fits beside every live run's in `runs.memoryBudget`, and only within
+`runs.maxRunning`. A refused submission is `429 at_capacity`, with the numbers. Each run namespace
+also has a ResourceQuota of its footprint plus 512Mi and one pod of slack, and a LimitRange.
+
+Executors leave after 60 seconds idle (dynamic allocation), so an idle session holds only its
+driver.
+
+**The first run on a node waits for the pull.** The runtime image is about 1.4 GB compressed. There
+is no pre-pull DaemonSet; to avoid the wait, pull `runs.image` on each node beforehand.
+
+## Placement: the second-node recipe
+
+Drivers and executors can be kept on nodes of their own, away from the rest of the platform. The
+recipe for a homelab whose second server is the Spark node:
+
+```sh
+kubectl label node <spark-node> booth.projectbooth.io/pool=compute
+kubectl taint node <spark-node> booth.projectbooth.io/pool=compute:NoSchedule
+```
+
+```yaml
+runs:
+  driver:
+    nodeSelector: {booth.projectbooth.io/pool: compute}
+    tolerations: [{key: booth.projectbooth.io/pool, operator: Equal, value: compute, effect: NoSchedule}]
+  executor:
+    nodeSelector: {booth.projectbooth.io/pool: compute}
+    tolerations: [{key: booth.projectbooth.io/pool, operator: Equal, value: compute, effect: NoSchedule}]
+```
+
+The run-pods admission policy requires every entry of the configured `nodeSelector` on every pod in
+a run namespace, so a driver can't place pods elsewhere. Tolerations and affinity are not enforced:
+leaving one out only keeps a pod off a tainted node, the safe direction. The backend itself is placed
+by the top-level `nodeSelector`, `tolerations` and `affinity`.
+
+Both images exist for amd64 and arm64, so the Spark node may be either. Its labels, taints and
+memory are still to be supplied for the homelab (ADR 0110, "Not decided"); size `runs.memoryBudget`
+to what that node has free.
+
+## Egress
+
+`runs.egress.mode: open` (the default, the user's choice in ADR 0110): a run's pods reach the
+internet and nothing else of the network. `runs.egress.exceptCidrs` (every private, CGNAT,
+link-local, loopback and reserved range) stays unreachable, which covers the cluster's pod and
+Service ranges on k3s and kind, the LAN and the cloud metadata address. In-cluster, a run reaches
+only its own pods, DNS, the Kubernetes API (the driver alone) and, with data access, the backend's
+internal port, booth-database's Postgres and the object store.
+
+**What "open" means, stated plainly:** anything a run's code can read, it can send to any internet
+host. With data access that includes everything its submitter's leases cover: the whole workspace
+schema and warehouse, and the S3 keys, which stay valid until their lease expires. Acceptable for a
+trusted homelab on a LAN; not for an install where editors aren't trusted. There, set
+`runs.egress.mode=closed` (DNS, the run's own pods and the API server only) or
+`submit.minRole=owner`.
+
+## What a run can and can't do
+
+A run's code runs as its submitter, in its own namespace, with:
+- a Kubernetes account on its driver (Spark needs it to create executors), allowed pods and
+  config maps in the run's own namespace only, and fenced by the run-pods admission policy: only the
+  allowlisted images, the run's workspace label, the configured placement, the executor account
+  with no token;
+- with data access, a workload token naming the run (`spark:<workspace>:<run>`), its submitter's
+  role in the workspace capped at editor, and the credential sidecars' leases.
+
+It can't reach another run, another namespace's pods, booth-core, the node or the LAN; it can't
+read Secrets, not even in its own namespace; it can't create a pod as its driver's account, or with
+another image or placement.
+
+**Known residuals, stated plainly** (ADR 0110 ruling 6, `docs/design-v0.md` item 4):
+
+1. **Whole-workspace scope.** A read lease is the whole `public` schema or warehouse prefix; an
+   editor's run can also write there.
+2. **S3 keys can be copied.** They stay valid until their lease expires, even after the run is gone.
+   That matters once egress is open.
+3. **User code can reach the Kubernetes API server.** NetworkPolicy is per pod, and the driver runs
+   the user's code with its own Kubernetes account (ADR 0110 ruling 3, a documented departure from
+   ADR 0057). That account may only manage pods and config maps in the run's own namespace, and the
+   admission policies limit what pods it can create, but the API server itself is within reach of
+   user code, so an API-server vulnerability would be within its reach. This is specific to Spark
+   on Kubernetes.
+4. **Pods the driver creates.** The driver can spend its quota on pods running the allowlisted
+   images; no more than its own code can already do.
+5. **Revocation lag.** When a submitter loses access (or their editor role), the run is ended and
+   its namespace deleted at once, which ends every connection in it; copied S3 keys outlive that.
+6. **CNI enforcement.** All of the network fencing depends on the CNI enforcing NetworkPolicy.
+
+**The Spark UI opens for its submitter only.** It is content the run's own code controls (the
+driver's web server), and the shell embeds module pages same-origin, so anyone else who opened it
+would run that code's script with their own session (ARCHITECTURE item 55). Owners and operators see
+a run's state and log in the module's UI instead, rendered as text. Kill, thread-dump and
+heap-histogram actions are refused for everyone. There is no history server: the Spark UI goes when
+the driver exits.
+
+## Who may do what
+
+| | Viewer | Editor | Owner | Platform operator |
+|---|---|---|---|---|
+| See the workspace's applications | yes | yes | yes | as their role |
+| Submit, start a session (`submit.minRole`) | no | yes | yes | as their role |
+| Stop an application, read its log | no | their own | any | any |
+| See a session, read its log | no | their own | any | no |
+| Run statements in a session | no | their own | their own | no |
+| Open a run's Spark UI | no | their own | their own | no |
 
 ## Sessions: known limits in v0
 
@@ -71,3 +239,39 @@ Known limits, stated plainly:
   location (`s3a://`) may share a bucket.
 - **Runs submitted with a workload token** (a pipeline task) get no data access in this version
   (ADR 0110 ruling 5).
+
+## Uninstall and upgrade
+
+`helm uninstall`, or booth-core's module uninstall, removes everything: every run namespace (each
+is owned by the chart's driver ClusterRole, so Kubernetes' garbage collector deletes them), both
+admission policies and their bindings, and the ClusterRoles. A run that was live is gone with its
+namespace; its record stays in the module's database. Integration checks both routes leave nothing
+behind.
+
+An upgrade restarts the backend. Live runs carry on: the new backend re-adopts every one from the
+database, a session's statement in flight included. A run namespace with no live run behind it, once
+a minute old, is deleted by the controller's sweep.
+
+## When a run won't start, or ends early
+
+A run's `reason` (in the UI and on `/v1`) says why, in the words of whatever refused it:
+
+- **`the driver didn't start within ...` / `not scheduled: ...`**: no node fits it. Check
+  `runs.*.nodeSelector` against the nodes' labels, the taints, and free memory.
+- **`ErrImagePull` / `ImagePullBackOff`**: the node can't pull `runs.image` (or, with data access, the
+  backend's image or the credential sidecar). Check the registry is reachable from the node.
+- **`could not start: no data access: ...`**: the run asked for something its submitter can't have:
+  a backend that isn't theirs, `readwrite` as a viewer, a workspace with no lakehouse warehouse, two
+  storage locations in one bucket. The broker's or booth-lakehouse's own reason follows.
+- **`lost its data access: ...`**: the submitter lost their role, or their editor role, while the run
+  lived, or hasn't signed in for 7 days. The run ended and its namespace went.
+- **`could not start: a credential sidecar ... got no lease in time`**: the broker or the data module
+  didn't answer within 5 minutes; see booth-core's and the data module's logs.
+- **`booth-core refused to mint for booth-spark`**: the manifest's `workloadIdentity` or the
+  `booth-workload-minting-credentials` Secret: an operator problem, not the submitter's.
+- **`429 at_capacity`** on submission: `runs.maxRunning` or `runs.memoryBudget`; the message has the
+  numbers.
+
+The backend logs one line per run transition (`runs: <id> <state>: <reason>`) and every refused
+internal-port call; `kubectl -n bspark-<run> describe pod driver` and its events show the rest while
+the run lives. `/healthz` reports the database; booth-core shows the module unhealthy when it fails.

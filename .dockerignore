@@ -7,3 +7,5 @@ hack
 test
 **/*_test.go
 *.md
+web/node_modules
+web/dist

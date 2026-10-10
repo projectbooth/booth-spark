@@ -7,9 +7,9 @@
 //     with core's X-Booth-Identity assertion (internal/identity): the module's own UI now, the
 //     Spark UI proxy from step 2.
 //
-// Authenticated today: the two "who am I" calls (/v1/me and /ui/api/me), the applications API
-// (/v1/applications, step 3), and the Spark UI proxy (/runs/{id}/ui/..., step 2) over the
-// module's run records. Sessions arrive in step 4.
+// The module's own UI (web/, step 6) calls the same applications and sessions API under /ui/api,
+// as the person core's assertion names: the same handlers, the same rules, never a token in the
+// page. The Spark UI proxy is /runs/{id}/ui/... (step 2).
 package api
 
 import (
@@ -18,9 +18,12 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -29,6 +32,7 @@ import (
 
 	"github.com/projectbooth/booth-spark/internal/auth"
 	"github.com/projectbooth/booth-spark/internal/identity"
+	"github.com/projectbooth/booth-spark/internal/runs"
 	"github.com/projectbooth/booth-spark/internal/uiproxy"
 )
 
@@ -55,6 +59,8 @@ type Deps struct {
 	Runs RunLookup
 	// Applications is the /v1 job-submission API. Nil leaves /v1/applications unrouted (404).
 	Applications *Applications
+	// Web is the module's built UI (web/dist). Nil serves the plain placeholder page instead.
+	Web fs.FS
 }
 
 // OpenAPI is the /v1 interface's OpenAPI 3.1 document (openapi/v1.yaml), linted in CI and kept
@@ -119,13 +125,37 @@ func NewRouter(deps Deps) http.Handler {
 	// caller without an assertion 401, not a map of what exists.
 	r.Group(func(ui chi.Router) {
 		ui.Use(iframeAuth(deps.Iframe))
-		ui.Get("/", page(deps.SubmitMinRole))
-		ui.Get("/ui/api/me", func(w http.ResponseWriter, r *http.Request) {
-			c := callerFrom(r.Context())
-			writeJSON(w, http.StatusOK, me{
-				Subject: c.Subject, DisplayName: c.DisplayName, Workspace: c.Workspace, Role: string(c.Role),
-				Operator: c.Operator, CanSubmit: canSubmit(auth.Role(c.Role), deps.SubmitMinRole),
-				SubmitMinRole: string(deps.SubmitMinRole),
+		if deps.Web != nil {
+			ui.Get("/", spa(deps.Web))
+			ui.Get("/assets/*", spa(deps.Web))
+		} else {
+			ui.Get("/", page(deps.SubmitMinRole))
+		}
+		// The UI's API: /v1's handlers, as the assertion's caller (never a workload: core's
+		// assertion names a person).
+		ui.Route("/ui/api", func(api chi.Router) {
+			api.Use(asIdentity)
+			api.Get("/me", func(w http.ResponseWriter, r *http.Request) {
+				c := callerFrom(r.Context())
+				m := me{
+					Subject: c.Subject, DisplayName: c.DisplayName, Workspace: c.Workspace, Role: string(c.Role),
+					Operator: c.Operator, CanSubmit: canSubmit(auth.Role(c.Role), deps.SubmitMinRole),
+					SubmitMinRole: string(deps.SubmitMinRole),
+				}
+				if a := deps.Applications; a != nil {
+					l := a.Limits
+					m.Limits = &uiLimits{MaxExecutors: l.MaxExecutors, DefaultExecutors: l.DefaultExecutors, DriverMemory: l.DriverMemory,
+						ExecutorMemory: l.ExecutorMemory, MaxMemory: l.MaxMemory, MaxDuration: l.MaxDuration.String(),
+						SessionIdleTimeout: l.SessionIdleTimeout.String(), SessionMaxLifetime: l.SessionMaxLifetime.String(),
+						DataAccess: l.Data}
+				}
+				writeJSON(w, http.StatusOK, m)
+			})
+			if deps.Applications != nil {
+				deps.Applications.routes(api, deps.SubmitMinRole)
+			}
+			api.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+				apiError(w, http.StatusNotFound, "not_found", "not found")
 			})
 		})
 		// The Spark UI of one run (docs/design-v0.md item 5).
@@ -195,6 +225,74 @@ type me struct {
 	Workload      bool   `json:"workload"`
 	CanSubmit     bool   `json:"canSubmit"`
 	SubmitMinRole string `json:"submitMinRole"`
+	// Limits is what the UI's forms offer (/ui/api/me only).
+	Limits *uiLimits `json:"limits,omitempty"`
+}
+
+// uiLimits are the chart's limits as the UI shows them: the defaults it fills in and the most it
+// lets a person ask for. The API enforces them either way.
+type uiLimits struct {
+	MaxExecutors       int             `json:"maxExecutors"`
+	DefaultExecutors   int             `json:"defaultExecutors"`
+	DriverMemory       string          `json:"driverMemory"`
+	ExecutorMemory     string          `json:"executorMemory"`
+	MaxMemory          string          `json:"maxMemory"`
+	MaxDuration        string          `json:"maxDuration"`
+	SessionIdleTimeout string          `json:"sessionIdleTimeout"`
+	SessionMaxLifetime string          `json:"sessionMaxLifetime"`
+	DataAccess         runs.DataLimits `json:"dataAccess"`
+}
+
+// asIdentity gives the UI's API the identity /v1's handlers read, from core's verified assertion.
+func asIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := callerFrom(r.Context())
+		id := auth.Identity{Subject: c.Subject, DisplayName: c.DisplayName, Workspace: c.Workspace, Role: auth.Role(c.Role), Operator: c.Operator}
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+	})
+}
+
+// uiCSP is the UI's Content-Security-Policy: its own scripts, styles and API, nothing else, and no
+// framing but by its own origin (the shell's iframe).
+const uiCSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+
+// spa serves the built UI: index.html at /, and its hashed assets. Asset URLs are relative (vite
+// base "./") and the UI routes by the URL's fragment: under iframe-proxy the browser sees this
+// module at /iframe/spark/..., and core forwards only the rest. An unknown asset is a real 404.
+func spa(web fs.FS) http.HandlerFunc {
+	files := http.FileServerFS(web)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", uiCSP)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if strings.HasPrefix(name, "assets/") {
+			if _, err := fs.Stat(web, name); err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			files.ServeHTTP(w, r)
+			return
+		}
+		// Every page is index.html, which names the current build's hashed assets: never cached.
+		w.Header().Set("Cache-Control", "no-cache")
+		r = r.Clone(r.Context())
+		r.URL.Path = "/"
+		files.ServeHTTP(w, r)
+	}
+}
+
+// WebDir is the UI directory as an fs.FS, nil when dir is empty or holds no index.html.
+func WebDir(dir string) fs.FS {
+	if dir == "" {
+		return nil
+	}
+	f := os.DirFS(dir)
+	if _, err := fs.Stat(f, "index.html"); err != nil {
+		return nil
+	}
+	return f
 }
 
 // canSubmit applies ADR 0110's floor: at least minRole (editor or owner), so never a viewer.

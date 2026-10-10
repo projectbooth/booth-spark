@@ -811,3 +811,46 @@ Ruled 2026-10-10 (ADR 0110, step 5 rulings), built in step 5b:
    is never shown. Store and API tests; `sessions.sh` reads the module's database before and after.
 4. `data` is a required check.
 5. A demoted submitter ends the run: accepted, recorded above as a departure from the note.
+
+## As built: step 6 (the module's UI and the operations doc), 2026-10-10
+
+- **The UI** (`web/`): a small React and Vite app, as booth-streamlit's, built into the backend
+  image and served behind core's assertion (`BOOTH_WEB_DIR`). For everyone in the workspace, its
+  applications and their state; for editors and owners (`submit.minRole`), a submission form
+  (inline Python, resources, the data paths the install offers) and sessions with a statement
+  console (SQL results as a table, Python output, tracebacks). A run's page shows its facts, its
+  driver log to whoever may read it (its submitter, owners, operators), a Stop button for them, and
+  the Spark UI link to its submitter only. Everything the run's code produced (its log, statement
+  output, tracebacks) is rendered as text by React; a Chromium test checks markup in a log never
+  becomes an element.
+- **No API of its own** (decision). The UI calls `/v1`'s handlers under `/ui/api`, with the identity
+  core's assertion names (never a workload, never a bearer: a bearer on `/ui/api` is 401). The same
+  rules, the same refusals, the same tests. The page holds no token.
+- **Relative URLs and fragment routing** (decision): the page lives at `/iframe/spark/` and core
+  forwards only the rest, so assets (`vite base "./"`), API calls (`ui/api/...`) and routes
+  (`#/applications/<id>`) never leave the module's prefix. Browser-checked.
+- **A strict CSP** on the UI: its own scripts, styles and API only (`default-src 'none'`, no
+  `unsafe-*`), `frame-ancestors 'self'`, `form-action 'none'`. Hashed assets are cached for a year;
+  the page never.
+- **The UI's lint and tests run in the image build** (decision): the backend image's Dockerfile
+  builds `web/` with `npm run lint && npm test && npm run build` (Node pinned by digest), so the
+  required `image` check covers them and a failing UI never ships. No new required check.
+- **Integration**: `module-ui.sh` (real-core): the page, its CSP and assets through core; in
+  Chromium, a submission through the form, its log (which prints an `<img onerror>`) shown as text,
+  a viewer's view; every request under `/iframe/spark/`, no console error; the UI's run is the
+  editor's own on `/v1`.
+- **The operations doc** (`docs/operations.md`) is complete: requirements, install and the values an
+  operator sets, sizing and admission, the first-run pull, the second-node placement recipe, egress
+  and what "open" means, what a run can and can't do with residuals 1 to 6 (residual 3 in plain
+  words), the Spark UI's submitter-only rule, who may do what, sessions' limits, retention, data
+  access, uninstall and upgrade, and what each failure reason means.
+
+Open questions, for the coordinator (in the PR too):
+
+1. **The UI's API shares the shell's origin.** Like every iframe-proxy module's, `/iframe/spark/ui/api`
+   accepts any request carrying the viewer's iframe session, so a script running on the shell's
+   origin as that viewer (another module's iframe content) could call it as them. That is ARCHITECTURE
+   item 55, the reason the Spark UI is submitter-only; a separate origin is that item's fix, not this
+   module's. Accept for v0, as booth-streamlit's UI does?
+2. **The homelab's second node** is still to be described (ADR 0110, "Not decided"); the recipe
+   uses `booth.projectbooth.io/pool=compute` and works on amd64 or arm64.
