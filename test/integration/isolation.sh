@@ -111,7 +111,7 @@ rb() { # NAMESPACE ROLE SUBJECT-NS SUBJECT
 }
 expect "control: the backend binds the driver role in its own namespace" "$(rb bspark-fencectl booth-spark-driver bspark-fencectl driver | as create -f -)" 'created'
 expect "the backend can't create a RoleBinding in kube-system" "$(rb kube-system booth-spark-driver kube-system driver | as create -f -)" 'denied request'
-expect "the backend can't bind cluster-admin, even in its own namespace" "$(rb bspark-fencectl cluster-admin bspark-fencectl x | as create -f -)" '(forbidden|denied request)'
+expect "the backend can't bind cluster-admin, even in its own namespace" "$(rb bspark-fencectl cluster-admin bspark-fencectl x | as create -f -)" '(denied request|escalat|not currently held)'
 expect "the backend can't bind the driver role to another account" "$(rb bspark-fencectl booth-spark-driver kube-system default | as create -f -)" 'denied request'
 for v in "get secrets -A" "list pods -A" "get pods --subresource=log -n kube-system" "create pods -n kube-system" \
          "create deployments.apps -n kube-system" "update namespaces" "patch namespaces" "create clusterrolebindings"; do

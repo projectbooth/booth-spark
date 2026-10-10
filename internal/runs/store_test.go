@@ -178,7 +178,7 @@ type fakeCluster struct {
 	launched, deleted []string
 	launchErr         error
 	driver            map[string]DriverState
-	namespaces        map[string]string
+	namespaces        map[string]RunNamespace
 	runner            *fakeRunner
 }
 
@@ -196,7 +196,7 @@ func (f *fakeCluster) Driver(_ context.Context, ns string) (DriverState, error) 
 func (f *fakeCluster) LogTail(_ context.Context, ns string, _ int64) (string, error) {
 	return "log of " + ns, nil
 }
-func (f *fakeCluster) RunNamespaces(context.Context) (map[string]string, error) {
+func (f *fakeCluster) RunNamespaces(context.Context) (map[string]RunNamespace, error) {
 	return f.namespaces, nil
 }
 
@@ -279,11 +279,24 @@ func TestController_Sweep(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	live, _ := s.Create(ctx, newRun(t, "acme", "u1"), "", roomy)
-	f := &fakeCluster{namespaces: map[string]string{live.Namespace: live.ID, "bspark-rgone": "rgone"}}
-	c := &Controller{Store: s, Cluster: f, Now: time.Now}
+	now := time.Now()
+	old := now.Add(-2 * SweepGrace)
+	f := &fakeCluster{namespaces: map[string]RunNamespace{
+		live.Namespace: {Run: live.ID, Created: old},
+		"bspark-rgone": {Run: "rgone", Created: old},
+		// Not live either, but just created: spared until it is older than SweepGrace.
+		"bspark-rnew": {Run: "rnew", Created: now.Add(-SweepGrace / 2)},
+	}}
+	c := &Controller{Store: s, Cluster: f, Now: func() time.Time { return now }}
 	c.Sweep(ctx)
 	if len(f.deleted) != 1 || f.deleted[0] != "bspark-rgone" {
-		t.Errorf("swept %v, want only the orphan", f.deleted)
+		t.Errorf("swept %v, want only the old orphan", f.deleted)
+	}
+	delete(f.namespaces, "bspark-rgone") // gone, as the real cluster would have it
+	now = now.Add(SweepGrace)
+	c.Sweep(ctx)
+	if len(f.deleted) != 2 || f.deleted[1] != "bspark-rnew" {
+		t.Errorf("swept %v, want the new orphan once it is older than SweepGrace", f.deleted)
 	}
 }
 
