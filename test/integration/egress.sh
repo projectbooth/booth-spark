@@ -68,7 +68,7 @@ expect "reachable from a session: the internet" "$(pr 'the internet (1.1.1.1:443
 
 step "runs.egress.mode=closed: no internet either"
 bash "$here/install-spark.sh" "$image" "$spark_image" --set runs.egress.mode=closed >/dev/null
-kubectl -n booth-spark rollout status deploy/booth-spark --timeout=300s >/dev/null
+backend_settled
 r=$(probe_run); echo "$r"
 controls
 expect "not reachable: the internet (dropped)" "$(pr 'the internet (1.1.1.1:443)')" '^closed:TimeoutError$'
@@ -81,6 +81,6 @@ expect "not reachable from a session: the internet (dropped)" "$(pr 'the interne
 
 step "back to the default"
 bash "$here/install-spark.sh" "$image" "$spark_image" >/dev/null
-kubectl -n booth-spark rollout status deploy/booth-spark --timeout=300s >/dev/null
+backend_settled
 [ "$ok" = 1 ] || fail "egress checks failed (see above)"
 echo "all egress checks passed"

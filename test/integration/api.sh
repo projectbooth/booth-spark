@@ -50,11 +50,28 @@ app_json() {
   python3 -c "import json,sys; d={'name':sys.argv[1],'main':{'inlinePython':sys.argv[2]}}; d.update(json.loads(sys.argv[3] or '{}')); print(json.dumps(d))" "$1" "$2" "${3:-}"
 }
 
-# submit TOKEN NAME PYTHON [EXTRA]: submits and prints the new run's id.
+# submit TOKEN NAME PYTHON [EXTRA]: submits and prints the new run's id. A 502/503/504 from the
+# gateway (the backend's pod being replaced, e.g. right after a helm upgrade) is retried.
 submit() {
-  v1 "$1" POST /applications "$(app_json "$2" "$3" "${4:-}")"
+  local data
+  data=$(app_json "$2" "$3" "${4:-}")
+  for _ in $(seq 1 10); do
+    v1 "$1" POST /applications "$data"
+    case "$code" in 502|503|504) sleep 3 ;; *) break ;; esac
+  done
   [ "$code" = 201 ] || fail "submit $2: $code $body"
   echo "$body" | jq_ "d['id']"
+}
+
+# backend_settled: waits until exactly one backend pod exists and it is ready (after an upgrade,
+# the old pod can still be terminating, and in the Service's endpoints, for a few seconds).
+backend_settled() {
+  kubectl -n booth-spark rollout status deploy/booth-spark --timeout=300s >/dev/null
+  for _ in $(seq 1 60); do
+    [ "$(kubectl -n booth-spark get pods -l app.kubernetes.io/name=booth-spark -o name | wc -l | tr -d ' ')" = 1 ] && return 0
+    sleep 2
+  done
+  fail "the old backend pod never went away"
 }
 
 # wait_state TOKEN ID STATE... [timeout seconds via WAIT=]: waits until the run is in one of the
@@ -98,7 +115,11 @@ ns_gone() {
 start_session() {
   local body
   body=$(python3 -c "import json,sys; d={'name':sys.argv[1]}; d.update(json.loads(sys.argv[2] or '{}')); print(json.dumps(d))" "$2" "${3:-}")
-  v1 "$1" POST /sessions "$body"
+  local data=$body
+  for _ in $(seq 1 10); do
+    v1 "$1" POST /sessions "$data"
+    case "$code" in 502|503|504) sleep 3 ;; *) break ;; esac
+  done
   [ "$code" = 201 ] || fail "start session $2: $code $body"
   echo "$body" | jq_ "d['id']"
 }
