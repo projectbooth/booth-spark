@@ -72,7 +72,7 @@ done
 for args in "get secrets -A" "list pods -A" "get pods --subresource=log -n kube-system" "create pods -n kube-system"             "update namespaces" "patch namespaces" "bind clusterroles/cluster-admin" "get clusterroles/cluster-admin"             "create clusterrolebindings" "get endpointslices.discovery.k8s.io -n kube-system" "create deployments.apps -n $ns"; do
   test "$(kubectl auth can-i $args --as="$sa")" = "no" || fail "unexpectedly ALLOWED: $args"
 done
-test "$(kubectl -n "$ns" get pod -l app.kubernetes.io/name=booth-spark -o jsonpath='{.items[0].spec.automountServiceAccountToken}')" = "true"   || fail "the backend pod doesn't mount its token"
+test "$(kubectl -n "$ns" get pod "$(ready_pod "$ns" app.kubernetes.io/name=booth-spark)" -o jsonpath='{.spec.automountServiceAccountToken}')" = "true"   || fail "the backend pod doesn't mount its token"
 echo "ok: exactly the fenced rights"
 
 if [ "${REAL_CORE:-}" = "1" ]; then

@@ -13,6 +13,28 @@ step() { echo "--- $*"; }
 
 kubectl create namespace "$probe_ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
+# ready_pod NS SELECTOR [NOT-NAME]: waits (up to 180s) for a pod matching SELECTOR whose Ready
+# condition is True, that is not being deleted and is not named NOT-NAME, and prints its name. A
+# pod's phase stays Running while it terminates, and `rollout status` right after deleting a pod
+# can answer before the deployment has noticed, so neither tells an old pod from its replacement.
+ready_pod() {
+  local name=""
+  for _ in $(seq 1 180); do
+    name=$(kubectl -n "$1" get pods -l "$2" -o json | python3 -c '
+import json, sys
+for p in json.load(sys.stdin)["items"]:
+    m = p["metadata"]
+    if m.get("deletionTimestamp") or m["name"] == sys.argv[1]:
+        continue
+    if any(c["type"] == "Ready" and c["status"] == "True" for c in p.get("status", {}).get("conditions", [])):
+        print(m["name"])
+        break' "${3:-}")
+    [ -n "$name" ] && { echo "$name"; return 0; }
+    sleep 1
+  done
+  fail "no ready pod for $2 in $1${3:+ other than $3} after 180s"
+}
+
 # probe NAME SCRIPT: runs SCRIPT (sh) in a curl pod in $probe_ns and prints its output.
 probe() {
   local name=$1 script=$2 phase=""

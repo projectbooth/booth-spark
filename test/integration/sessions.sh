@@ -84,11 +84,12 @@ for _ in $(seq 1 30); do
   v1 "$T_editor" GET "/sessions/$s/statements/$long"; [ "$(echo "$body" | jq_ "d['state']")" = running ] && break; sleep 1
 done
 [ "$(echo "$body" | jq_ "d['state']")" = running ] || fail "the long statement never started: $body"
-old=$(kubectl -n booth-spark get pod -l app.kubernetes.io/name=booth-spark -o jsonpath='{.items[0].metadata.name}')
+old=$(ready_pod booth-spark app.kubernetes.io/name=booth-spark)
 kubectl -n booth-spark delete pod "$old" --wait=false >/dev/null
-kubectl -n booth-spark rollout status deploy/booth-spark --timeout=180s >/dev/null
-new=$(kubectl -n booth-spark get pod -l app.kubernetes.io/name=booth-spark --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-[ "$new" != "$old" ] || fail "the backend pod wasn't replaced"
+# Its replacement: Ready, not being deleted, not the old one (main's Integration once took the
+# terminating old pod, still in phase Running, for the new one).
+new=$(ready_pod booth-spark app.kubernetes.io/name=booth-spark "$old")
+[ -n "$new" ] && [ "$new" != "$old" ] || fail "the backend pod wasn't replaced"
 echo "backend $old -> $new"
 fresh
 rl=$(WAIT=180 wait_stmt "$T_editor" "$s" "$long")
@@ -163,10 +164,10 @@ kubectl get namespace "$orphan" >/dev/null || fail "control: the orphan namespac
 # after it is created. Wait for a sweep to actually see this one (it logs sparing it) and check it
 # is still there, then that a later sweep reaps it once it is older than the grace (1m).
 for _ in $(seq 1 90); do
-  kubectl -n booth-spark logs deploy/booth-spark --since=5m 2>/dev/null | grep -q "sweep: sparing $orphan " && break
+  kubectl -n booth-spark logs "pod/$(ready_pod booth-spark app.kubernetes.io/name=booth-spark)" --since=5m 2>/dev/null | grep -q "sweep: sparing $orphan " && break
   sleep 1
 done
-kubectl -n booth-spark logs deploy/booth-spark --since=5m | grep -q "sweep: sparing $orphan " || fail "no sweep saw $orphan within 90s"
+kubectl -n booth-spark logs "pod/$(ready_pod booth-spark app.kubernetes.io/name=booth-spark)" --since=5m | grep -q "sweep: sparing $orphan " || fail "no sweep saw $orphan within 90s"
 age=$(( $(date +%s) - $(date -d "$(kubectl get namespace "$orphan" -o jsonpath='{.metadata.creationTimestamp}')" +%s) ))
 kubectl get namespace "$orphan" -o jsonpath='{.status.phase}' | grep -qx Active || fail "$orphan didn't survive a sweep at ${age}s old"
 echo "a sweep spared $orphan at under a minute old; still active at ${age}s"
