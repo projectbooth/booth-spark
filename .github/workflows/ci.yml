@@ -97,6 +97,16 @@ jobs:
             --set oidc.jwksUrl=http://keycloak.keycloak.svc:8080/realms/booth/protocol/openid-connect/certs \
             --set oidc.workloadIssuerUrl=http://booth-core.booth-system.svc:8080 --set submit.minRole=owner
 
+      # release.yml's chart step, so it cannot rot unseen: package at a version, as a tag does, and
+      # render the packaged chart with its default values. --api-versions stands in for the
+      # discovery of a 1.30+ cluster, which _checks.tpl requires (as test/contract does).
+      - name: helm package and template the package (release.yml's chart step)
+        working-directory: charts/booth-spark
+        run: |
+          helm package . --version 0.0.0-ci --app-version 0.0.0-ci --destination ../../dist
+          helm template booth-spark ../../dist/booth-spark-0.0.0-ci.tgz --namespace booth-spark \
+            --api-versions admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy > /dev/null
+
   image:
     # Catches a broken Dockerfile on the PR that breaks it, not at release time. Not pushed.
     runs-on: ubuntu-24.04
