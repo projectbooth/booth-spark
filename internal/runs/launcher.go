@@ -293,7 +293,10 @@ func (l *Launcher) Logs(ctx context.Context, ns string, tailLines, maxBytes int6
 
 func (l *Launcher) logs(ctx context.Context, ns string, opts *corev1.PodLogOptions, maxBytes int64) (string, error) {
 	rc, err := l.Kube.CoreV1().Pods(ns).GetLogs(DriverPod, opts).Stream(ctx)
-	if apierrors.IsNotFound(err) {
+	// No pod yet, or a driver container that hasn't started ("is waiting to start: ContainerCreating"
+	// or PodInitializing, which the API answers 400): its log is empty so far, not unreadable
+	// (found by the UI's Integration check, which polls a pending run's log).
+	if apierrors.IsNotFound(err) || (apierrors.IsBadRequest(err) && strings.Contains(err.Error(), "waiting to start")) {
 		return "", nil
 	}
 	if err != nil {
