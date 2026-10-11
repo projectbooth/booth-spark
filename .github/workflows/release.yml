@@ -6,6 +6,9 @@ name: Release
 # (images/spark-runtime; runs.image, by digest). Both are built for linux/amd64 and linux/arm64,
 # like the Spark image they start from, so a run can land on either kind of node. Pushing a
 # `vX.Y.Z` tag triggers it; the job summary lists each image's digest, the value the chart pins.
+# The chart is attached to the GitHub release and pushed as an OCI artifact,
+# oci://ghcr.io/projectbooth/charts/booth-spark at the same version, the reference installs use
+# (ADR 0111 items 1 and 2).
 on:
   push:
     tags:
@@ -96,3 +99,9 @@ jobs:
         with:
           files: dist/*.tgz
           generate_release_notes: true
+
+      - name: Push the chart to GHCR as an OCI artifact
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          helm push "dist/booth-spark-${{ needs.images.outputs.version }}.tgz" oci://ghcr.io/projectbooth/charts
+          echo "- \`oci://ghcr.io/projectbooth/charts/booth-spark\` version \`${{ needs.images.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
