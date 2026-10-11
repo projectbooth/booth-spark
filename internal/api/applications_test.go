@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -235,5 +236,41 @@ func TestStoreRuns(t *testing.T) {
 	}
 	if rec := call(h, "editor", "acme", "GET", "/v1/applications/"+id, ""); !strings.Contains(rec.Body.String(), `"uiPath":"/iframe/spark/runs/`+id+`/ui/"`) {
 		t.Errorf("uiPath missing: %s", rec.Body)
+	}
+}
+
+// A run that ends while its live log is read (its pods going) gets the tail kept when it ended; a
+// run still live whose log can't be read is a 502 (found by the UI's Integration check).
+func TestApplications_LogsAsTheRunEnds(t *testing.T) {
+	s := testStore(t)
+	var finish bool
+	h := NewRouter(Deps{DB: fakeDB{}, Tokens: people, Iframe: fakeIframe{}, SubmitMinRole: auth.RoleEditor, Applications: &Applications{
+		Store: s, Admission: roomy,
+		Limits: runs.Limits{MaxExecutors: 2, DefaultExecutors: 2, DriverMemory: "512m", ExecutorMemory: "512m", MaxMemory: "2g", MaxDuration: 6 * time.Hour},
+		LiveLogs: func(ctx context.Context, ns string, _ int64) (string, error) {
+			if finish {
+				id := strings.TrimPrefix(ns, runs.NamespacePrefix)
+				if err := s.Finish(ctx, id, runs.Succeeded, "the application finished", "the kept tail", time.Now()); err != nil {
+					t.Error(err)
+				}
+			}
+			return "", errors.New("unable to retrieve container logs")
+		},
+	}})
+	rec := call(h, "editor", "acme", "POST", "/v1/applications", `{"name":"pi","main":{"inlinePython":"print(1)"}}`)
+	id := idOf(t, rec.Body.String())
+	// Before its launch there is no log to read, and none is asked for.
+	if rec := call(h, "editor", "acme", "GET", "/v1/applications/"+id+"/logs", ""); rec.Code != 200 || rec.Body.String() != "" {
+		t.Errorf("a run not launched yet: %d %q", rec.Code, rec.Body)
+	}
+	if err := s.MarkLaunched(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(h, "editor", "acme", "GET", "/v1/applications/"+id+"/logs", ""); rec.Code != 502 {
+		t.Errorf("a live run's unreadable log: %d %s", rec.Code, rec.Body)
+	}
+	finish = true
+	if rec := call(h, "editor", "acme", "GET", "/v1/applications/"+id+"/logs", ""); rec.Code != 200 || rec.Body.String() != "the kept tail" {
+		t.Errorf("a run that ended during the read: %d %q", rec.Code, rec.Body)
 	}
 }

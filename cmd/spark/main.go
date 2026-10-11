@@ -80,7 +80,11 @@ func run() error {
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating the database: %w", err)
 	}
-	deps := api.Deps{DB: pool, Tokens: tokens, Iframe: iframe, SubmitMinRole: cfg.SubmitMinRole, Runs: api.StoreRuns{Store: store}}
+	deps := api.Deps{DB: pool, Tokens: tokens, Iframe: iframe, SubmitMinRole: cfg.SubmitMinRole, Runs: api.StoreRuns{Store: store},
+		Web: api.WebDir(os.Getenv("BOOTH_WEB_DIR"))}
+	if deps.Web == nil {
+		log.Printf("web: no UI build at BOOTH_WEB_DIR=%q; serving the placeholder page", os.Getenv("BOOTH_WEB_DIR"))
+	}
 	if rc := cfg.Runs; rc != nil {
 		kcfg, err := rest.InClusterConfig()
 		if err != nil {

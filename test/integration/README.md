@@ -76,9 +76,12 @@ egress, and the run namespaces' egress rules are a boundary (ADR 0110). Then, in
 - The submitter is demoted to viewer, then removed: each time their running session fails with the
   reason and its namespace goes.
 
-## Not covered yet (later build steps)
-
-- The module's own UI (step 6).
+`module-ui.sh` (real-core, step 6): the module's UI through core's iframe proxy: the built page, its
+CSP, its assets and API behind the assertion; in Chromium (`browser/module-ui.mjs`), an editor
+submits an application through the form and its log, which prints markup, shows as text with no
+element or script from it; a viewer sees the run, no way to submit, and not its log; every request
+stays under `/iframe/spark/` and the page logs no error. The UI's submission is the editor's own run
+on `/v1`.
 
 ## Running locally
 

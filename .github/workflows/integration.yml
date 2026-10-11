@@ -171,6 +171,10 @@ jobs:
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/ui-path.sh
 
+      - name: "The module's UI (step 6): through core, its CSP, a submission in Chromium, a log shown as text, a viewer's view"
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: test/integration/module-ui.sh
+
       - name: "Egress (ADR 0110): open is the internet only; closed is not even that"
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: test/integration/egress.sh booth-spark:ci booth-spark-runtime:ci
@@ -188,6 +192,7 @@ jobs:
           kubectl -n booth-spark get secrets || true
           kubectl -n booth-spark describe pods | tail -60
           kubectl -n booth-spark logs deployment/booth-spark --tail=200 || true
+          kubectl -n booth-spark logs deployment/booth-spark | grep -E 'api: (session )?logs:' | tail -20 || true
           kubectl -n keycloak logs deploy/keycloak --tail=60 || true
           kubectl get namespaces -l booth.projectbooth.io/spark-run --show-labels || true
           for n in $(kubectl get namespaces -l booth.projectbooth.io/spark-run -o name | cut -d/ -f2); do

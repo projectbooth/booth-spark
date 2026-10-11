@@ -38,7 +38,9 @@ func (d *DataAccess) Any() bool {
 
 // DataLimits are which data paths this install has (the chart's dataAccess.*).
 type DataLimits struct {
-	Database, Lakehouse, Storage bool
+	Database  bool `json:"database"`
+	Lakehouse bool `json:"lakehouse"`
+	Storage   bool `json:"storage"`
 }
 
 // MaxStorageLocations is ADR 0045's limit on the locations one run may name.

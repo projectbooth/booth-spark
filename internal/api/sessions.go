@@ -222,8 +222,9 @@ func (a Applications) sessionLogs(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if s.State.Terminal() {
 		text, err = a.Store.LogTail(r.Context(), s.ID)
-	} else if a.LiveLogs != nil {
+	} else if a.LiveLogs != nil && s.Launched {
 		text, err = a.LiveLogs(r.Context(), s.Namespace, 500)
+		text, err = a.endedMeanwhile(r.Context(), s.ID, text, err)
 	}
 	if err != nil {
 		log.Printf("api: session logs: %v", err)
