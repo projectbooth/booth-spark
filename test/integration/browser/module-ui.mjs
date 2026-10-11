@@ -56,7 +56,7 @@ try {
   check((await ed.ui.getByText(/editor-user, editor in/).count()) >= 1, "it names the signed-in person and role, from core's assertion");
 
   await ed.ui.getByRole("button", { name: "New application" }).click();
-  await ed.ui.getByLabel("Name").fill(runName);
+  await ed.ui.getByLabel("Name", { exact: true }).fill(runName);
   await ed.ui.getByLabel("PySpark code").fill(code);
   await ed.ui.getByLabel("Executors (most)").fill("0");
   await ed.ui.getByRole("button", { name: "Submit" }).click();
