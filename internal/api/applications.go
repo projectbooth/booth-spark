@@ -235,6 +235,19 @@ func (a Applications) get(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// endedMeanwhile covers a run that ended while its live log was read: its pods are going, so the
+// read can fail, but the tail kept when it ended is there (found by the UI's Integration check,
+// which polls a run's log as it finishes). A run still live with an unreadable log stays an error.
+func (a Applications) endedMeanwhile(ctx context.Context, id, text string, err error) (string, error) {
+	if err == nil {
+		return text, nil
+	}
+	if now, gerr := a.Store.Get(ctx, id); gerr == nil && now.State.Terminal() {
+		return a.Store.LogTail(ctx, id)
+	}
+	return text, err
+}
+
 // mayManage is item 3's rule for stopping a run and reading its logs: its submitter, an owner of
 // its workspace, or a platform operator. Logs can carry what the run's code printed, its token
 // included (step 5), so a viewer or another editor never reads them.
@@ -293,6 +306,7 @@ func (a Applications) logs(w http.ResponseWriter, r *http.Request) {
 		text, err = a.Store.LogTail(r.Context(), run.ID)
 	} else if a.LiveLogs != nil {
 		text, err = a.LiveLogs(r.Context(), run.Namespace, tail)
+		text, err = a.endedMeanwhile(r.Context(), run.ID, text, err)
 	}
 	if err != nil {
 		log.Printf("api: logs: %v", err)
