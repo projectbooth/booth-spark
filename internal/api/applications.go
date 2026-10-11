@@ -304,7 +304,9 @@ func (a Applications) logs(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if run.State.Terminal() {
 		text, err = a.Store.LogTail(r.Context(), run.ID)
-	} else if a.LiveLogs != nil {
+	} else if a.LiveLogs != nil && run.Launched {
+		// Not before its launch: until the run's namespace and the backend's RoleBinding in it
+		// exist, the API refuses the read (403), and there is no log yet anyway.
 		text, err = a.LiveLogs(r.Context(), run.Namespace, tail)
 		text, err = a.endedMeanwhile(r.Context(), run.ID, text, err)
 	}

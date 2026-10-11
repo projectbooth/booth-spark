@@ -259,6 +259,13 @@ func TestApplications_LogsAsTheRunEnds(t *testing.T) {
 	}})
 	rec := call(h, "editor", "acme", "POST", "/v1/applications", `{"name":"pi","main":{"inlinePython":"print(1)"}}`)
 	id := idOf(t, rec.Body.String())
+	// Before its launch there is no log to read, and none is asked for.
+	if rec := call(h, "editor", "acme", "GET", "/v1/applications/"+id+"/logs", ""); rec.Code != 200 || rec.Body.String() != "" {
+		t.Errorf("a run not launched yet: %d %q", rec.Code, rec.Body)
+	}
+	if err := s.MarkLaunched(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
 	if rec := call(h, "editor", "acme", "GET", "/v1/applications/"+id+"/logs", ""); rec.Code != 502 {
 		t.Errorf("a live run's unreadable log: %d %s", rec.Code, rec.Body)
 	}

@@ -33,7 +33,11 @@ async function shell(ctx, url) {
     if (u.pathname === "/__booth_parent") return;
     if (!u.pathname.startsWith("/iframe/spark/")) escaped.push(u.pathname);
     // A failed request, named (the console only says "Failed to load resource").
-    if (resp.status() >= 400) errors.push(`${resp.status()} ${u.pathname}${u.search.replace(/booth_iframe_token=[^&]*/, "booth_iframe_token=<redacted>")}`);
+    if (resp.status() >= 400) {
+      const what = `${resp.status()} ${u.pathname}${u.search.replace(/booth_iframe_token=[^&]*/, "booth_iframe_token=<redacted>")}`;
+      errors.push(what);
+      resp.text().then((t) => console.log(`failed request ${what}: ${t.slice(0, 300)}`), () => {});
+    }
   });
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   page.on("pageerror", (e) => errors.push(String(e)));

@@ -57,7 +57,11 @@ viewer_url=$(awk '$1=="viewer" {print $2}' <<<"$urls")
 
 name="ui-made-$(date +%s)"
 step "Chromium through core's iframe proxy: submit through the UI, its log as text, the viewer's view"
-(cd "$here/browser" && node module-ui.mjs "http://localhost:$core_port" "$editor_url" "$viewer_url" "$name")
+if ! (cd "$here/browser" && node module-ui.mjs "http://localhost:$core_port" "$editor_url" "$viewer_url" "$name"); then
+  # Before later steps (uninstall.sh) remove the backend: what it logged about the UI's requests.
+  kubectl -n booth-spark logs deploy/booth-spark | grep -E 'api: |/ui/api/applications/[^ ]*/logs' | tail -40 || true
+  fail "the module UI's browser checks failed (above)"
+fi
 
 step "the UI's submission is the editor's own run"
 T_editor=$(tok editor-user)
