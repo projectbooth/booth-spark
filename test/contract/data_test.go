@@ -140,3 +140,46 @@ func TestChart_DataAccess(t *testing.T) {
 	helmFails(t, "must be pinned by digest", "--api-versions", vapAPI, "--set", "dataAccess.enabled=true", "--set", "runs.image="+runtimeImage,
 		"--set", "dataAccess.sidecar.image=ghcr.io/projectbooth/credential-sidecar:latest")
 }
+
+// ADR 0113 amendment 1: dataAccess.coreUrl, the path the identity-keys annotation maps core's
+// coreUrl to, is the core address the backend gets (BOOTH_DATA_ACCESS's coreUrl), so a value core
+// supplies at install reaches the broker and gateway calls.
+func TestChart_DataAccessCoreURLReachesTheBackend(t *testing.T) {
+	const stub = "http://core-stub.elsewhere.svc:9999"
+	var dep struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Env []struct {
+							Name  string `yaml:"name"`
+							Value string `yaml:"value"`
+						} `yaml:"env"`
+					} `yaml:"containers"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	args := append(append([]string{}, dataOn...), "--set", "dataAccess.coreUrl="+stub)
+	if err := yaml.Unmarshal(helmTemplate(t, "templates/deployment.yaml", args...), &dep); err != nil {
+		t.Fatal(err)
+	}
+	var data struct {
+		CoreURL string `json:"coreUrl"`
+	}
+	found := false
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "BOOTH_DATA_ACCESS" {
+			found = true
+			if err := json.Unmarshal([]byte(e.Value), &data); err != nil {
+				t.Fatalf("BOOTH_DATA_ACCESS is not JSON: %v", err)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the Deployment has no BOOTH_DATA_ACCESS")
+	}
+	if data.CoreURL != stub {
+		t.Errorf("BOOTH_DATA_ACCESS coreUrl = %q, want %q", data.CoreURL, stub)
+	}
+}
