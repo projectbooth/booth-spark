@@ -11,3 +11,9 @@ appVersion: "0.1.0"
 # templates/_checks.tpl also fails when the API itself is not served.
 kubeVersion: ">=1.30.0-0"
 home: https://github.com/projectbooth/booth-spark
+# ADR 0113: where core's install API puts the platform's shared identity settings in this chart's
+# values (contracts/module-manifest.md, "Chart annotation: identity keys"). Values a request sets
+# win, per leaf; a Helm CLI install never reads this.
+annotations:
+  booth.projectbooth.io/identity-keys: |
+    {"issuerUrl":"oidc.issuerUrl","clientId":"oidc.clientId","jwksUrl":"oidc.jwksUrl","workloadIssuerUrl":"oidc.workloadIssuerUrl","groupsClaim":"oidc.groupsClaim","iframeIssuerUrl":"identity.issuerUrl"}
