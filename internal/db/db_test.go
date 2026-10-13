@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,11 +37,42 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+// Nothing listening: a real refused connection is retried, then fails with the attempt count.
 func TestOpen_Unreachable(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if pool, err := Open(ctx, "postgres://u:p@127.0.0.1:1/x?sslmode=disable&connect_timeout=1"); err == nil {
+	pool, err := open(ctx, "postgres://u:p@127.0.0.1:1/x?sslmode=disable&connect_timeout=1", 2*time.Second)
+	if err == nil {
 		pool.Close()
 		t.Fatal("Open succeeded against nothing")
+	}
+	if !strings.Contains(err.Error(), "still failing after 2s") {
+		t.Errorf("err = %v, want it retried to the bound", err)
+	}
+}
+
+// The server answers but refuses: a wrong password or a missing database fails on the first
+// attempt, not after a minute.
+func TestOpen_RefusedByTheServerIsNotRetried(t *testing.T) {
+	u, err := url.Parse(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongPassword, missingDB := *u, *u
+	wrongPassword.User = url.UserPassword(u.User.Username(), "not-the-password")
+	missingDB.Path = "/booth_spark_no_such_database"
+	for name, dsn := range map[string]string{"wrong password": wrongPassword.String(), "missing database": missingDB.String()} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		start := time.Now()
+		pool, err := open(ctx, dsn, DefaultMaxElapsed)
+		cancel()
+		if err == nil {
+			pool.Close()
+			t.Errorf("%s: Open succeeded", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "(attempt 1; not a connection failure, not retried)") || time.Since(start) > 5*time.Second {
+			t.Errorf("%s: err = %v after %s, want one attempt", name, err, time.Since(start))
+		}
 	}
 }
