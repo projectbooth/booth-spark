@@ -252,6 +252,13 @@ An upgrade restarts the backend. Live runs carry on: the new backend re-adopts e
 database, a session's statement in flight included. A run namespace with no live run behind it, once
 a minute old, is deleted by the controller's sweep.
 
+At startup the backend waits up to a minute for its first PostgreSQL connection (a new pod's first
+connections can be refused for a few seconds while the cluster's network policy catches up). It
+retries only a connection that was never made (refused, a timeout, DNS, a server still starting up),
+from 500 ms doubling to 8 s, and logs each retry as `connecting to postgres at <host>:<port>: not
+ready yet (attempt N: <error>); retrying in <delay>`. After a minute it exits with the last error
+and the number of attempts. A wrong password, a missing database or any SQL error exits at once.
+
 ## When a run won't start, or ends early
 
 A run's `reason` (in the UI and on `/v1`) says why, in the words of whatever refused it:

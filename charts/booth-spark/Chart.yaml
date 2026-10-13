@@ -16,4 +16,4 @@ home: https://github.com/projectbooth/booth-spark
 # win, per leaf; a Helm CLI install never reads this.
 annotations:
   booth.projectbooth.io/identity-keys: |
-    {"issuerUrl":"oidc.issuerUrl","clientId":"oidc.clientId","jwksUrl":"oidc.jwksUrl","workloadIssuerUrl":"oidc.workloadIssuerUrl","groupsClaim":"oidc.groupsClaim","iframeIssuerUrl":"identity.issuerUrl"}
+    {"issuerUrl":"oidc.issuerUrl","clientId":"oidc.clientId","jwksUrl":"oidc.jwksUrl","workloadIssuerUrl":"oidc.workloadIssuerUrl","groupsClaim":"oidc.groupsClaim","iframeIssuerUrl":"identity.issuerUrl","coreUrl":"dataAccess.coreUrl"}

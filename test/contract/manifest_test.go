@@ -507,10 +507,10 @@ func TestChart_IdentityKeysAnnotation(t *testing.T) {
 		t.Fatalf("parsing values.yaml: %v", err)
 	}
 	known := map[string]bool{"issuerUrl": true, "clientId": true, "jwksUrl": true,
-		"workloadIssuerUrl": true, "groupsClaim": true, "iframeIssuerUrl": true}
+		"workloadIssuerUrl": true, "groupsClaim": true, "iframeIssuerUrl": true, "coreUrl": true}
 	for key, path := range mapping {
 		if !known[key] {
-			t.Errorf("identity-keys names %q, not a shared setting (issuerUrl, clientId, jwksUrl, workloadIssuerUrl, groupsClaim, iframeIssuerUrl)", key)
+			t.Errorf("identity-keys names %q, not a shared setting (issuerUrl, clientId, jwksUrl, workloadIssuerUrl, groupsClaim, iframeIssuerUrl, coreUrl)", key)
 		}
 		if _, ok := valueAtPath(values, path); !ok {
 			t.Errorf("identity-keys maps %q to %q, which has no default in values.yaml", key, path)
@@ -524,6 +524,7 @@ func TestChart_IdentityKeysAnnotation(t *testing.T) {
 		"workloadIssuerUrl": "oidc.workloadIssuerUrl",
 		"groupsClaim":       "oidc.groupsClaim",
 		"iframeIssuerUrl":   "identity.issuerUrl",
+		"coreUrl":           "dataAccess.coreUrl", // ADR 0113 amendment 1
 	}
 	if len(mapping) != len(want) {
 		t.Errorf("identity-keys = %v, want exactly %v", mapping, want)
