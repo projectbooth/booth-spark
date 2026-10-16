@@ -237,6 +237,12 @@ Known limits, stated plainly:
   takes credentials per bucket, so a run naming two locations in one bucket is refused at launch,
   with that reason; name their common parent instead. The warehouse (`s3://`) and one storage
   location (`s3a://`) may share a bucket.
+- **On SeaweedFS, a deleted directory lingers for about 2 minutes** (ADR 0118's S3 store). SeaweedFS
+  removes an emptied folder only after its filer's `s3.empty_folder_cleanup_delay` (default `2m`);
+  until then S3A sees the path as an empty directory, where real S3 would have nothing. A write in
+  `errorifexists` mode to a path deleted less than 2 minutes earlier can therefore fail; overwrite
+  and append are unaffected, and Spark ignores the empty `_temporary` a commit leaves behind.
+  Integration's `s3a` job (`test/s3a`) checks S3A against SeaweedFS and accepts exactly this state.
 - **Runs submitted with a workload token** (a pipeline task) get no data access in this version
   (ADR 0110 ruling 5).
 
