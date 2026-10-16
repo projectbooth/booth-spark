@@ -27,6 +27,9 @@ ADMIN_KEY=admin_key
 ADMIN_SECRET=admin_secret_for_the_gate_only
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d)
+# The runtime image runs as its spark user (uid 185), not as the caller: everything it reads here
+# must be world-readable. mktemp makes the directory 0700. (The key in it is this gate's own.)
+chmod 0755 "$WORK"
 # Docker sees the host path; on Git Bash (Windows) that is the Windows form of mktemp's.
 MOUNT=$WORK
 command -v cygpath >/dev/null 2>&1 && MOUNT=$(cygpath -m "$WORK")
@@ -94,6 +97,8 @@ mkdir -p "$WORK/creds"
 printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' "$KEY_ID" "$KEY_SECRET" >"$WORK/creds/credentials"
 chmod 0644 "$WORK/creds/credentials"
 cp "$HERE/s3a_check.py" "$WORK/s3a_check.py"
+chmod 0755 "$WORK/creds"
+chmod 0644 "$WORK/s3a_check.py"
 
 # The per-bucket settings booth-spark's DataConf sets (internal/runs/objects_data.go), plus the
 # gate's own: 5 MiB parts (S3A's minimum) so 12 MiB is a three-part upload, and two-key pages.
