@@ -394,15 +394,28 @@ func TestDockerfile_BaseImagesPinnedByDigest(t *testing.T) {
 			}
 		}
 	}
-	// Every jar the runtime image adds is checked by its SHA-256.
+	// Every jar the runtime image adds is checked by its SHA-256: fetched by the helpers stage's
+	// fetch, which accepts a file only when sha256sum -c passes and fails after 3 attempts. Nothing
+	// is ADDed from a URL.
 	df, _ := os.ReadFile(repoFile("images", "spark-runtime", "Dockerfile"))
-	adds := regexp.MustCompile(`(?m)^ADD\s+(.*)$`).FindAllStringSubmatch(string(df), -1)
-	if len(adds) != 4 {
-		t.Errorf("%d ADD lines, want the 4 jars", len(adds))
+	if adds := regexp.MustCompile(`(?m)^ADD\s+.*https?://`).FindAllString(string(df), -1); len(adds) > 0 {
+		t.Errorf("ADD from a URL (fetch it, verified): %v", adds)
 	}
-	for _, a := range adds {
-		if !regexp.MustCompile(`^--checksum=sha256:[0-9a-f]{64} `).MatchString(a[1]) {
-			t.Errorf("ADD %s has no SHA-256", a[1])
+	fetches := regexp.MustCompile(`(?m)^\s*fetch (\S+) \\\n\s*(\S+?);?(?: \\)?$`).FindAllStringSubmatch(string(df), -1)
+	if len(fetches) != 4 {
+		t.Errorf("%d fetch lines, want the 4 jars", len(fetches))
+	}
+	for _, f := range fetches {
+		if !strings.HasPrefix(f[1], "https://repo1.maven.org/maven2/") || !strings.HasSuffix(f[1], ".jar") {
+			t.Errorf("fetch %s: want a jar on Maven Central", f[1])
+		}
+		if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(f[2]) {
+			t.Errorf("fetch %s: %q is not a SHA-256", f[1], f[2])
+		}
+	}
+	for _, want := range []string{`sha256sum -c --status`, `if [ "$i" -eq 3 ]`, `return 1`, `rm -f "$f"`} {
+		if !strings.Contains(string(df), want) {
+			t.Errorf("the Dockerfile's fetch lost %q: it must verify every file and fail after 3 attempts", want)
 		}
 	}
 }
