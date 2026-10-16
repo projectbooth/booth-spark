@@ -214,7 +214,7 @@ jobs:
       CORE_REF: f631bd2cde1991492676649945dac226a7410f90
       DATABASE_REF: bdab4b82dc662ab4bb4afa9d3084b0b765943eae
       STORAGE_REF: 177076640f3c94e8620d6a2ee703d5404d840a84
-      LAKEHOUSE_REF: d7ed5338bb89bf00002546b0f3a5fdb07da681b5
+      LAKEHOUSE_REF: 278a7d6a5e71679366b59e9cc779d79bbc0a16bf
     steps:
       - uses: actions/checkout@v4
 
@@ -307,3 +307,30 @@ jobs:
             for c in agent pg-sidecar s3-warehouse s3-storage-0 start-gate driver; do kubectl -n "$n" logs driver -c "$c" --tail=40 || true; done
             kubectl -n "$n" get events --sort-by=.lastTimestamp | tail -30 || true
           done
+
+  s3a:
+    # ADR 0118 verification gate 1: Hadoop S3A as the runtime image ships it (hadoop-aws 3.4.2, AWS
+    # SDK v2 2.29.52, SidecarCredentialsProvider) against SeaweedFS 4.48 with a prefix-scoped IAM
+    # user's bare key, no session token: read, write, ranged read, rename, multipart, listing, a
+    # Spark Parquet job, delete, and refusals outside the prefix (test/s3a). Twice: with S3A's
+    # defaults (no upload checksums), and with CRC32 upload checksums.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build the booth-spark runtime image
+        run: docker build -f images/spark-runtime/Dockerfile -t booth-spark-runtime:ci .
+
+      - name: S3A against SeaweedFS, S3A's default checksum settings
+        run: test/s3a/run.sh booth-spark-runtime:ci
+
+      - name: S3A against SeaweedFS, CRC32 upload checksums
+        env:
+          S3A_CHECKSUM: CRC32
+        run: test/s3a/run.sh booth-spark-runtime:ci

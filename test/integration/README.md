@@ -10,6 +10,7 @@ head SHA.
 | `standins` | booth-core's BoothModule CRD (vendored from `CORE_REF`, `fixtures/boothmodule-crd.yaml`), a throwaway PostgreSQL, then this chart with its own database Secret | The chart installs on a real 1.30+ cluster (its ValidatingAdmissionPolicy check passes against live discovery); core's real CRD schema keeps every manifest field; the backend reaches Postgres; `/healthz`; every iframe route refuses a caller without an assertion (including unknown paths); `/v1` answers 503 with no issuer configured; the service account has no Kubernetes API access and no token mounted. |
 | `real-core` | A real Keycloak (pinned digest) and a real booth-core built at `CORE_REF`, then this chart with its defaults plus every identity setting | Everything above, plus: core provisions `booth-database-credentials` (ADR 0053) and marks the module `Healthy`; `identity.sh` (below). The job first checks the vendored CRD is byte-identical to core's at `CORE_REF`. |
 | `data` | The real-core install with `dataAccess` on and runs on booth-spark's runtime image (`images/spark-runtime`, built in the job), plus booth-database, booth-storage (its s3 credential provider), booth-lakehouse with Lakekeeper and a MinIO, at pinned refs (`deploy-data.sh`), on Calico | `verify.sh` with minting declared, then `data.sh` (below). |
+| `s3a` | No cluster: a SeaweedFS 4.48 container (pinned digest) with a prefix-scoped IAM user's bare key, no session token, as booth-storage's seaweedfs provider will mint (ADR 0118) | ADR 0118 gate 1, `test/s3a/run.sh`: Hadoop S3A from the runtime image, through `SidecarCredentialsProvider`, with DataConf's per-bucket settings: write, read, ranged read, rename (copy + delete), a 12 MiB multipart upload in 5 MiB parts, paged listing, a Spark Parquet write and read, recursive delete; reading, writing and listing outside the prefix are refused with AccessDenied. Twice: S3A's default checksum settings, and CRC32 upload checksums. |
 
 `identity.sh` (docs/design-v0.md item 2):
 
@@ -95,3 +96,6 @@ test/integration/verify.sh
 For `real-core`, check out booth-core at `CORE_REF`, build and load its image the same way, and run
 `deploy-realcore.sh <core checkout> booth-core:ci booth-spark:ci`, then `REAL_CORE=1 verify.sh` and
 `identity.sh`, on a fresh cluster.
+
+For `s3a`, Docker alone: `docker build -f images/spark-runtime/Dockerfile -t booth-spark-runtime:ci .`
+then `test/s3a/run.sh booth-spark-runtime:ci` (and again with `S3A_CHECKSUM=CRC32`).
