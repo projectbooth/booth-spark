@@ -15,14 +15,33 @@
 FROM apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211 AS spark
 
 FROM eclipse-temurin:21-jdk-noble@sha256:b468c3fc688b14450571494f588bd939378e7fd542ed5a73f8efc13f17872a87 AS helpers
-ADD --checksum=sha256:73914527305a40cce504b0d3d90b23caf565136912d607ae8ae7c5895512332c \
-    https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.14/postgresql-42.7.14.jar /jars/
-ADD --checksum=sha256:3123c3798af642dd537230923548e013ef41cc28b6626e5225808cf5670a0f82 \
-    https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-4.1_2.13/1.12.0/iceberg-spark-runtime-4.1_2.13-1.12.0.jar /jars/
-ADD --checksum=sha256:d2d24e6b715b5656b9d238bf13b6682a07e2004dd36aad74a73aeb854319f4d9 \
-    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.2/hadoop-aws-3.4.2.jar /jars/
-ADD --checksum=sha256:62638f33045690c6bc5e496b54b0b2e89a9ad38cbedacdf6e017fea6bc85f55c \
-    https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar /jars/
+# Each jar is fetched up to 3 times and checked against its SHA-256 after every fetch: a file that
+# doesn't match is deleted and fetched again, never used, and the build fails naming the jar if no
+# fetch matches. (ADD --checksum makes one attempt, so one bad response from Maven Central failed a
+# required check. -R keeps Maven Central's Last-Modified time, as ADD did. This stage's curl and
+# sha256sum stay in this stage: the final image copies /jars/ only.)
+RUN set -eu; mkdir -p /jars; \
+    fetch() { \
+      url=$1; sum=$2; f=/jars/$(basename "$url"); i=1; \
+      while :; do \
+        if curl -fsSLR --retry 3 --retry-all-errors -o "$f" "$url" \
+           && echo "$sum  $f" | sha256sum -c --status; then \
+          echo "fetched $(basename "$url") (attempt $i, sha256 $sum)"; return 0; \
+        fi; \
+        echo "attempt $i of 3: $(basename "$url") failed to download or did not match sha256 $sum" >&2; \
+        rm -f "$f"; \
+        if [ "$i" -eq 3 ]; then echo "giving up on $url: no fetch matched sha256 $sum" >&2; return 1; fi; \
+        sleep $((i * 5)); i=$((i + 1)); \
+      done; \
+    }; \
+    fetch https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.14/postgresql-42.7.14.jar \
+      73914527305a40cce504b0d3d90b23caf565136912d607ae8ae7c5895512332c; \
+    fetch https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-4.1_2.13/1.12.0/iceberg-spark-runtime-4.1_2.13-1.12.0.jar \
+      3123c3798af642dd537230923548e013ef41cc28b6626e5225808cf5670a0f82; \
+    fetch https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.2/hadoop-aws-3.4.2.jar \
+      d2d24e6b715b5656b9d238bf13b6682a07e2004dd36aad74a73aeb854319f4d9; \
+    fetch https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar \
+      62638f33045690c6bc5e496b54b0b2e89a9ad38cbedacdf6e017fea6bc85f55c
 COPY --from=spark /opt/spark/jars/hadoop-client-api-3.4.2.jar /classpath/
 COPY images/spark-runtime/src/ /src/
 RUN javac --release 21 -Xlint:all,-classfile -Werror -d /out -cp "/jars/*:/classpath/*" $(find /src -name '*.java') \
