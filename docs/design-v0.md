@@ -898,3 +898,29 @@ against a fake verifier and minter; the real-core tests follow once booth-core s
   disabled service account) failing the run at its first mint, and a pipeline's run reading and
   writing through Storage and the Lakekeeper warehouse. Integration will use a stand-in module that
   declares `workloadIdentity.mint` and mints `pipeline:<id>` (ruling 7).
+
+## As built: `GET /v1/limits`, 2026-10-17
+
+Item 6's table listed `GET /v1/limits`, and releases up to 0.3.0 didn't serve it. booth-pipeline
+probes it through core's gateway to decide whether booth-spark is installed, so it got a 404 and
+reported "booth-spark is not installed".
+
+- **Served since 0.3.1** for any caller with a role in the workspace, people and workload tokens alike.
+- **Body:** the limits the module's own page shows (`/ui/api/me`'s `limits`, the same struct), plus
+  what this caller may do with them:
+  - `maxExecutors`, `defaultExecutors`, `driverMemory`, `executorMemory`;
+  - `maxMemory` (the largest heap, driver or executor), `maxDuration` (a Go duration);
+  - `sessionIdleTimeout`, `sessionMaxLifetime`;
+  - `dataAccess` `{database, lakehouse, storage}` (the paths this install offers);
+  - `role`, `canSubmit`, `submitMinRole`, `maxStorageLocations`.
+- **Refusals:** 401 without a token, 403 without a role in the workspace.
+- **Tested through real core's gateway:** an editor, a viewer, a workload token, no token, and an
+  outsider.
+- **Still different from item 6's table:**
+  - `resources` takes memory only: there is no `cores` for the driver or executors, which are
+    fixed at 1, and a body with `cores` is 400.
+  - `Idempotency-Key` is honoured on `POST /v1/applications` and `POST /v1/sessions` only, not on
+    `POST /v1/sessions/{id}/statements`. Stops are idempotent anyway.
+  - Two changes already recorded under step 3 and step 4: the OpenAPI document is
+    `internal/api/openapi/v1.yaml`, served at `/v1/openapi.yaml`; a session stops with
+    `DELETE /v1/sessions/{id}`.

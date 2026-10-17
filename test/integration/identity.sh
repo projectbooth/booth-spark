@@ -6,7 +6,9 @@
 #   - /v1 accepts core's real workload tokens, marked as workload callers (ADR 0056/0059);
 #   - the iframe routes, through core's real iframe proxy, verify core's real X-Booth-Identity
 #     assertion, including the /platform/operator claim (ADR 0094);
-#   - each credential works only on its own route group.
+#   - each credential works only on its own route group;
+#   - GET /v1/limits through the gateway: 200 for any member (booth-pipeline's "installed" probe),
+#     with canSubmit by role; 401 without a token, 403 without a role in the workspace.
 #
 # Tokens are requested inside the cluster, because a token's `iss` must be Keycloak's in-cluster URL,
 # which is what core and booth-spark trust.
@@ -85,6 +87,23 @@ check "operator: /platform/operator read off the token" "$(echo "$b" | field ope
 check "operator: the operator claim grants no submit" "$(echo "$b" | field canSubmit)" false
 check "outsider: no role in this workspace (refused by core)" "$(status -H "Authorization: Bearer $T_outsider" -H "X-Workspace: $WS" "$CORE/modules/spark/v1/me")" 403
 
+echo "# GET /v1/limits through core's gateway (docs/design-v0.md item 6; booth-pipeline's probe)"
+limits() { curl -s -H "Authorization: Bearer $1" -H "X-Workspace: $WS" "$CORE/modules/spark/v1/limits"; }
+check "limits, editor: 200" "$(status -H "Authorization: Bearer $T_editor" -H "X-Workspace: $WS" "$CORE/modules/spark/v1/limits")" 200
+b=$(limits "$T_editor")
+check "limits, editor: maxExecutors (runs.maxExecutors)" "$(echo "$b" | field maxExecutors)" 2
+check "limits, editor: maxMemory (runs.maxMemory)" "$(echo "$b" | field maxMemory)" 2g
+check "limits, editor: maxDuration (runs.maxDuration)" "$(echo "$b" | field maxDuration)" 6h0m0s
+check "limits, editor: role" "$(echo "$b" | field role)" editor
+check "limits, editor: may submit" "$(echo "$b" | field canSubmit)" true
+check "limits, viewer: 200" "$(status -H "Authorization: Bearer $T_viewer" -H "X-Workspace: $WS" "$CORE/modules/spark/v1/limits")" 200
+b=$(limits "$T_viewer")
+check "limits, viewer: role" "$(echo "$b" | field role)" viewer
+check "limits, viewer: never submits" "$(echo "$b" | field canSubmit)" false
+check "limits, viewer: the same limits" "$(echo "$b" | field maxExecutors)" 2
+check "limits, no token: 401" "$(status -H "X-Workspace: $WS" "$CORE/modules/spark/v1/limits")" 401
+check "limits, outsider: 403" "$(status -H "Authorization: Bearer $T_outsider" -H "X-Workspace: $WS" "$CORE/modules/spark/v1/limits")" 403
+
 echo "# /v1 straight to the Service, bypassing the gateway (ADR 0041)"
 direct() {
   if [ -n "${3:-}" ]; then status -H "Authorization: Bearer $1" -H "X-Booth-Workspace: $2" -H "X-Booth-Role: $3" "$SPARK/v1/me"
@@ -106,6 +125,7 @@ check "workload: accepted on /v1" "$(echo "$b" | field subject)" sparkit:1
 check "workload: marked as a workload caller" "$(echo "$b" | field workload)" true
 check "workload: role is the owner's, within the ceiling" "$(echo "$b" | field role)" editor
 check "workload: never an operator" "$(echo "$b" | field operator)" false
+check "workload: /v1/limits answers 200" "$(status -H "Authorization: Bearer $wltok" -H "X-Workspace: $WS" "$CORE/modules/spark/v1/limits")" 200
 check "workload token as an iframe assertion" "$(status -H "X-Booth-Identity: $wltok" -H "X-Booth-Workspace: $WS" "$SPARK/ui/api/me")" 401
 
 echo "# the iframe path through core's real proxy and assertion (ADR 0069)"
