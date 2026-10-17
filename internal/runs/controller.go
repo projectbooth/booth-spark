@@ -18,7 +18,7 @@ type cluster interface {
 	Launch(ctx context.Context, r Run) error
 	Delete(ctx context.Context, ns string) error
 	Driver(ctx context.Context, ns string) (DriverState, error)
-	LogTail(ctx context.Context, ns string, maxBytes int64) (string, error)
+	LogTail(ctx context.Context, ns string, maxBytes int64) (string, int64, error)
 	RunNamespaces(ctx context.Context) (map[string]RunNamespace, error)
 	RunnerReady(ctx context.Context, ns, token string) bool
 	RunnerSubmit(ctx context.Context, ns, token string, st Statement) error
@@ -90,14 +90,14 @@ func (c *Controller) Pass(ctx context.Context) {
 }
 
 func (c *Controller) finish(ctx context.Context, r Run, st State, reason string) error {
-	tail := ""
+	tail, offset := "", int64(0)
 	if r.Launched {
 		var err error
-		if tail, err = c.Cluster.LogTail(ctx, r.Namespace, c.LogTailBytes); err != nil {
+		if tail, offset, err = c.Cluster.LogTail(ctx, r.Namespace, c.LogTailBytes); err != nil {
 			log.Printf("runs: %s: keeping the driver's log: %v", r.ID, err)
 		}
 	}
-	if err := c.Store.Finish(ctx, r.ID, st, reason, tail, c.Now()); err != nil {
+	if err := c.Store.FinishAt(ctx, r.ID, st, reason, tail, offset, c.Now()); err != nil {
 		return err
 	}
 	if c.Data != nil {

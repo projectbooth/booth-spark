@@ -24,6 +24,7 @@ type RunStore interface {
 	List(ctx context.Context, workspace, kind string, limit int) ([]runs.Run, error)
 	RequestStop(ctx context.Context, id string) error
 	LogTail(ctx context.Context, id string) (string, error)
+	LogTailAt(ctx context.Context, id string) (string, int64, error)
 	AddStatement(ctx context.Context, runID, kind, code string, maxOpen int) (runs.Statement, error)
 	Statements(ctx context.Context, runID string) ([]runs.Statement, error)
 	GetStatement(ctx context.Context, runID, id string) (runs.Statement, error)
@@ -36,6 +37,9 @@ type Applications struct {
 	Admission runs.Admission
 	// LiveLogs reads the last lines of a live run's driver log.
 	LiveLogs func(ctx context.Context, ns string, tailLines int64) (string, error)
+	// LiveLogFrom reads a live run's driver log from a byte offset, at most max bytes, and says how
+	// far the log reached (less than from when it is shorter): the log cursor.
+	LiveLogFrom func(ctx context.Context, ns string, from int64, max int) ([]byte, int64, error)
 }
 
 // runView is a run as /v1 shows it.
@@ -287,6 +291,14 @@ func (a Applications) logs(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusForbidden, "forbidden", "only the run's submitter, a workspace owner or a platform operator can read its logs")
 		return
 	}
+	if r.URL.Query().Has("from") {
+		if r.URL.Query().Has("tail") {
+			apiError(w, http.StatusBadRequest, "invalid", "from and tail can't be used together")
+			return
+		}
+		a.logsFrom(w, r, run)
+		return
+	}
 	tail := int64(500)
 	if v := r.URL.Query().Get("tail"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -319,6 +331,78 @@ func (a Applications) logs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = io.WriteString(w, text)
+}
+
+// logsFrom is the log cursor (ADR 0119 amendment 3): the driver's log from byte offset ?from=, at
+// most runs.LogChunkBytes, with the offset to ask for next in X-Log-Offset. Offsets count bytes of
+// the driver's whole log, so they mean the same while the run lives and after it ends, when what
+// is left is the tail kept at its end (the last MiB): asking for an offset before that tail returns
+// the tail, and X-Log-Skipped says how many bytes are gone. X-Log-Complete: true once the run has
+// ended and the cursor has reached the end of its log. An offset beyond the log's end is 400.
+func (a Applications) logsFrom(w http.ResponseWriter, r *http.Request, run runs.Run) {
+	from, err := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+	if err != nil || from < 0 {
+		apiError(w, http.StatusBadRequest, "invalid", "from: a byte offset in the run's log, 0 or more")
+		return
+	}
+	if run.ContentClearedAt != nil {
+		apiError(w, http.StatusGone, "cleared", "the run's log was cleared "+run.ContentClearedAt.UTC().Format(time.RFC3339)+" (sessions.resultRetention)")
+		return
+	}
+	ended := run.State.Terminal()
+	var chunk []byte
+	if !ended {
+		reached := int64(0)
+		if a.LiveLogFrom != nil && run.Launched {
+			chunk, reached, err = a.LiveLogFrom(r.Context(), run.Namespace, from, runs.LogChunkBytes)
+		}
+		if err != nil || reached < from {
+			// The driver is gone or the log is shorter: the run may have ended meanwhile, and then
+			// what's left is the kept tail.
+			if now, gerr := a.Store.Get(r.Context(), run.ID); gerr == nil && now.State.Terminal() {
+				ended, err = true, nil
+			}
+		}
+		switch {
+		case ended:
+		case err != nil:
+			log.Printf("api: logs from %d: %v", from, err)
+			apiError(w, http.StatusBadGateway, "unavailable", "the run's log is not readable right now")
+			return
+		case reached < from:
+			apiError(w, http.StatusBadRequest, "invalid", "from: beyond the end of the run's log ("+strconv.FormatInt(reached, 10)+" bytes so far)")
+			return
+		}
+	}
+	next, skipped := from+int64(len(chunk)), int64(0)
+	if ended {
+		tail, off, err := a.Store.LogTailAt(r.Context(), run.ID)
+		if err != nil {
+			log.Printf("api: logs from %d: %v", from, err)
+			apiError(w, http.StatusInternalServerError, "internal", "could not read the run's log")
+			return
+		}
+		end := off + int64(len(tail))
+		switch {
+		case from > end:
+			apiError(w, http.StatusBadRequest, "invalid", "from: beyond the end of the run's log ("+strconv.FormatInt(end, 10)+" bytes)")
+			return
+		case from < off:
+			chunk, skipped = []byte(tail), off-from
+		default:
+			chunk = []byte(tail[from-off:])
+		}
+		next = end
+		w.Header().Set("X-Log-Complete", "true")
+	}
+	w.Header().Set("X-Log-Offset", strconv.FormatInt(next, 10))
+	if skipped > 0 {
+		w.Header().Set("X-Log-Skipped", strconv.FormatInt(skipped, 10))
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(chunk)
 }
 
 // StoreRuns resolves the Spark UI's runs from the run records: a run's UI exists while it runs.
