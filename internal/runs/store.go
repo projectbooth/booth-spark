@@ -62,6 +62,28 @@ type Run struct {
 	DataBearer string `json:"-"`
 	// Data is the run's data access as resolved before its launch (nil until then, or with none).
 	Data *DataPlan `json:"-"`
+	// DataOwner and DataCeiling are set for a run a pipeline submitted (ADR 0119): it reads and
+	// writes data as DataOwner, the token's booth_owner (a person's sub or svc:<ws>:<name>), with
+	// a token capped at DataCeiling, fixed at submit. Both empty for a person's run: its submitter,
+	// capped at editor (DataOwnerID, DataRoleCeiling).
+	DataOwner   string `json:"dataOwner,omitempty"`
+	DataCeiling string `json:"dataCeiling,omitempty"`
+}
+
+// DataOwnerID is whom the run reads and writes data as: DataOwner, else its submitter.
+func (r Run) DataOwnerID() string {
+	if r.DataOwner != "" {
+		return r.DataOwner
+	}
+	return r.Submitter
+}
+
+// DataRoleCeiling caps the run's token: DataCeiling, else editor (ADR 0110 item 4).
+func (r Run) DataRoleCeiling() string {
+	if r.DataCeiling != "" {
+		return r.DataCeiling
+	}
+	return "editor"
 }
 
 //go:embed migrations/*.sql
@@ -145,14 +167,14 @@ func NewID() string {
 
 const runColumns = `id, kind, workspace, submitter, submitter_name, workload, name, state, reason, namespace,
 	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token,
-	content_cleared_at, data_bearer, data`
+	content_cleared_at, data_bearer, data, data_owner, data_ceiling`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var r Run
 	var spec, data []byte
 	err := row.Scan(&r.ID, &r.Kind, &r.Workspace, &r.Submitter, &r.SubmitterName, &r.Workload, &r.Name, &r.State,
 		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched,
-		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data)
+		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data, &r.DataOwner, &r.DataCeiling)
 	if err != nil {
 		return r, err
 	}
@@ -213,10 +235,10 @@ func (s *Store) Create(ctx context.Context, r Run, idempotencyKey string, a Admi
 		}
 		var err error
 		out, err = scanRun(tx.QueryRow(ctx, `INSERT INTO runs (id, kind, workspace, submitter, submitter_name, workload, name, state, namespace, footprint_mi, spec, idempotency_key,
-								session_token, last_activity_at, data_bearer)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12, CASE WHEN $2 = 'session' THEN now() END, $13) RETURNING `+runColumns,
+								session_token, last_activity_at, data_bearer, data_owner, data_ceiling)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12, CASE WHEN $2 = 'session' THEN now() END, $13, $14, $15) RETURNING `+runColumns,
 			r.ID, r.Kind, r.Workspace, r.Submitter, r.SubmitterName, r.Workload, r.Name, r.Namespace, r.FootprintMi, spec, key, r.SessionToken,
-			r.DataBearer))
+			r.DataBearer, r.DataOwner, r.DataCeiling))
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrDuplicate

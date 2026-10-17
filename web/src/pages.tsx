@@ -98,6 +98,15 @@ function Facts({ run }: { run: Run }) {
         {run.submitterName || run.submitter}
         {run.workload && " (a workload)"}
       </dd>
+      {run.dataOwner && (
+        <>
+          <dt>Acting as</dt>
+          <dd>
+            <span className="mono">{run.dataOwner}</span>
+            <span className="muted"> — the owner of the pipeline that submitted it; its data access is theirs, up to {run.dataCeiling ?? "editor"}</span>
+          </dd>
+        </>
+      )}
       <dt>Created</dt>
       <dd>{when(run.createdAt)}</dd>
       {run.startedAt && (
@@ -157,6 +166,10 @@ function Facts({ run }: { run: Run }) {
 }
 
 function SparkUILink({ run, me }: { run: Run; me: Me }) {
+  // A run a pipeline submitted has no person to be its author, so no Spark UI (ADR 0119).
+  if (run.workload && run.state === "running") {
+    return <p className="muted">A run submitted by a workload has no Spark UI in Booth; its state and log are here.</p>;
+  }
   if (!run.uiPath) return null;
   // Only the submitter may open it (docs/design-v0.md item 5): its page is the run's own code.
   if (run.submitter !== me.subject) {

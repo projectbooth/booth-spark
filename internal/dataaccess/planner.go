@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,17 @@ type Planner struct {
 	HTTP    *http.Client
 }
 
-func runOf(r runs.Run) Run { return Run{ID: r.ID, Workspace: r.Workspace, Submitter: r.Submitter} }
+func runOf(r runs.Run) Run {
+	return Run{ID: r.ID, Workspace: r.Workspace, Owner: r.DataOwnerID(), Ceiling: r.DataRoleCeiling(), Pipeline: r.DataOwner != ""}
+}
+
+// refusal is a refused mint as the run's reason, naming whom core refused.
+func refusal(r Run, err error) error {
+	if errors.Is(err, ErrOwnerNoAccess) {
+		return runs.DataRefusal("%s %v", r.Who(), err)
+	}
+	return runs.DataRefusal("%v", err)
+}
 
 func (p *Planner) client() *http.Client {
 	if p.HTTP != nil {
@@ -35,9 +46,10 @@ func (p *Planner) client() *http.Client {
 
 // Prepare implements runs.Data.
 func (p *Planner) Prepare(ctx context.Context, r runs.Run) (runs.DataPlan, error) {
-	tok, err := p.Tokens.Get(ctx, runOf(r))
+	who := runOf(r)
+	tok, err := p.Tokens.Get(ctx, who)
 	if Refused(err) {
-		return runs.DataPlan{}, runs.DataRefusal("%v", err)
+		return runs.DataPlan{}, refusal(who, err)
 	}
 	if err != nil {
 		return runs.DataPlan{}, fmt.Errorf("minting the run's token: %w", err)
@@ -68,7 +80,7 @@ func (p *Planner) Prepare(ctx context.Context, r runs.Run) (runs.DataPlan, error
 	}
 	for _, s := range d.Storage {
 		if s.Access == "readwrite" && tok.Role != "editor" {
-			return runs.DataPlan{}, runs.DataRefusal("storage location %s/%s asks for readwrite, which needs an editor; the run's submitter is now a %s in this workspace", s.BackendID, s.Path, tok.Role)
+			return runs.DataPlan{}, runs.DataRefusal("storage location %s/%s asks for readwrite, which needs an editor; %s", s.BackendID, s.Path, viewerWhy(who))
 		}
 		loc, err := p.resolve(ctx, tok, r.Workspace, s.BackendID, s.Path, s.Access)
 		if err != nil {
@@ -86,15 +98,16 @@ func (p *Planner) Prepare(ctx context.Context, r runs.Run) (runs.DataPlan, error
 // Check implements runs.Data. A run that started as an editor's ends when its submitter is no longer
 // one: its sidecars hold read-write leases, which a viewer must not keep using until they expire.
 func (p *Planner) Check(ctx context.Context, r runs.Run) error {
-	tok, err := p.Tokens.Get(ctx, runOf(r))
+	who := runOf(r)
+	tok, err := p.Tokens.Get(ctx, who)
 	if Refused(err) {
-		return runs.DataRefusal("%v", err)
+		return refusal(who, err)
 	}
 	if err != nil {
 		return err
 	}
 	if r.Data != nil && r.Data.Role == "editor" && tok.Role != "editor" {
-		return runs.DataRefusal("the run's submitter is now a %s in this workspace, and the run started with an editor's read and write access", tok.Role)
+		return runs.DataRefusal("%s is now a %s in this workspace, and the run started with an editor's read and write access", who.Who(), tok.Role)
 	}
 	return nil
 }
@@ -217,4 +230,12 @@ func ObjectURL(backendID, path string) string {
 		segs[i] = url.PathEscape(s)
 	}
 	return "/modules/storage/api/backends/" + url.PathEscape(backendID) + "/objects/" + strings.Join(segs, "/")
+}
+
+// viewerWhy says why a run's token is a viewer's.
+func viewerWhy(r Run) string {
+	if r.Ceiling == "viewer" {
+		return "the pipeline that submitted the run holds only a viewer's role in this workspace"
+	}
+	return r.Who() + " is now a viewer in this workspace"
 }

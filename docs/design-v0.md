@@ -244,7 +244,8 @@ token belonging to another run.
    k3s is checked by a negative test.
 7. **Runs submitted with a workload token** (e.g. a pipeline task) have no human `owner` to mint
    for: ADR 0058 keeps the owner out of the token. v0 accepts them with `dataAccess` empty and
-   refuses data access with a 422 (ruling).
+   refuses data access with a 422 (ruling). **Amended by ADR 0119**: a pipeline's token carrying
+   core's signed `booth_owner` claim gets data access as that owner (see "As built: ADR 0119").
 
 ## 5. The Spark UI behind iframe-proxy
 
@@ -854,3 +855,46 @@ Open questions, for the coordinator (in the PR too):
    module's. Accept for v0, as booth-streamlit's UI does?
 2. **The homelab's second node** is still to be described (ADR 0110, "Not decided"); the recipe
    uses `booth.projectbooth.io/pool=compute` and works on amd64 or arm64.
+
+## As built: ADR 0119 (runs a pipeline submits), 2026-10-16
+
+ADR 0119 with its amendment 2 and 3 rulings; booth-spark's design note was accepted as written. Unit-tested
+against a fake verifier and minter; the real-core tests follow once booth-core ships the claim.
+
+- **The claims** (`internal/auth`): `booth_module` (ADR 0058) and `booth_owner` are read off a
+  verified token from core's workload issuer only, into the caller's identity. A human token
+  carrying them names nobody; a claim that isn't a string is no claim.
+- **The rule** (`internal/api/applications.go`, `workloadDataOwner`; amendment 3, ruling 1): a
+  workload token's run may ask for data access, or start from a file in booth-storage, only when
+  `booth_module` names the pipeline module (`pipeline`) and the token carries `booth_owner`. The
+  trust is the module claim, which core binds to the minting credential; the subject's kind
+  (`pipeline:<ws>:<runId>`) is a second guard, since any minting module chooses its own subjects.
+  Another module's token (even with a pipeline-shaped subject), a run's own `spark:` token, a token
+  naming no module, a pipeline token under another subject kind, and one without the owner claim
+  get 422 with the reason. The
+  body has no owner field and is decoded strictly, so an owner in it is 400. Sessions are outside
+  the ADR: a workload token's session still gets no data access.
+- **The record** (migration 0005): `data_owner` and `data_ceiling`, both empty for a person's run
+  (owner its submitter, ceiling editor). A pipeline's run records the claim as is and the lesser of
+  editor and the token's role, fixed at submit (ruling 4). `/v1` shows them as `dataOwner` and
+  `dataCeiling`.
+- **The mint** (`internal/dataaccess`): the run's token is minted with `owner` = the run's owner, an
+  opaque id core resolves (a person's sub or `svc:<workspace>:<name>`, ADR 0120), and the run's own
+  ceiling. A token above the ceiling is discarded. Refusals name whom core refused: "the run's
+  owner (<id>, the owner of the pipeline that submitted it) no longer has access ...".
+- **No Spark UI** for a run a workload submitted: no `uiPath`, the page says so, and the proxy
+  refuses it outright (a person's subject could never match `pipeline:<id>` anyway).
+- **The page** shows such a run as submitted by `pipeline:<id> (a workload)`, with an "Acting as"
+  line giving the owner's id as is (ruling 5: no display name) and the ceiling.
+- **A pipeline holding only a viewer's role can't submit at all** (`submit.minRole` is editor or
+  owner), so its viewer ceiling is never reached from `/v1` today; the rule and the mint still cap
+  at it, and the planner's "readwrite needs an editor" refusal covers a viewer-capped token.
+- **Same subject, same run** (amendment 3, ruling 7): getting, stopping and reading the log of a run
+  compare the caller's subject with the submission's, so every task token of one pipeline run
+  (`pipeline:<ws>:<runId>`) qualifies and another pipeline run's doesn't; `Idempotency-Key` is
+  scoped to the workspace and that subject. Tested. (Getting is open to the whole workspace, as for
+  every run.)
+- **Not yet tested against real core**: an owner core refuses (not seen within its window, or a
+  disabled service account) failing the run at its first mint, and a pipeline's run reading and
+  writing through Storage and the Lakekeeper warehouse. Integration will use a stand-in module that
+  declares `workloadIdentity.mint` and mints `pipeline:<id>` (ruling 7).

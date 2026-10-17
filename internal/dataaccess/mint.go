@@ -23,7 +23,8 @@ import (
 	"time"
 )
 
-// RoleCeiling caps every run's token (ADR 0110 item 4: data access never needs owner).
+// RoleCeiling caps every run's token (ADR 0110 item 4: data access never needs owner). A run a
+// pipeline submitted is capped lower when its token's role was lower (ADR 0119); see Run.Ceiling.
 const RoleCeiling = "editor"
 
 // Subject names the run in core's audit log: spark:<workspace>:<runId>. Core's subject rule,
@@ -48,14 +49,16 @@ func (t Token) Access() string {
 
 // Errors.
 var (
-	// ErrOwnerNoAccess: core refused the submitter (no role in the workspace any more, or not
-	// seen for 7 days).
-	ErrOwnerNoAccess = errors.New("the run's submitter no longer has access to this workspace, or hasn't signed in for 7 days")
+	// ErrOwnerNoAccess: core refused the run's owner (its submitter, or the owner of the pipeline
+	// that submitted it): no role in the workspace any more, a disabled service account, or a
+	// person not seen within core's owner window (7 days by default). Refusal names whom.
+	ErrOwnerNoAccess = errors.New("no longer has access to this workspace, or hasn't signed in within core's owner window (7 days by default)")
 	// ErrNotEntitled: core refused this module itself (manifest or minting credential); an
 	// operator problem, not the submitter's.
 	ErrNotEntitled = errors.New("booth-core refused to mint for booth-spark: check the manifest's workloadIdentity (dataAccess.enabled) and the booth-workload-minting-credentials Secret")
-	// ErrRoleExceeded: core granted something other than editor or viewer. It never should (it
-	// grants the lesser of the ceiling and the submitter's role); the token is discarded.
+	// ErrRoleExceeded: core granted something other than editor or viewer, or more than the run's
+	// ceiling. It never should (it grants the lesser of the ceiling and the owner's role); the
+	// token is discarded.
 	ErrRoleExceeded = errors.New("booth-core granted a role a run may not use; refusing the token")
 )
 
@@ -66,7 +69,7 @@ func Refused(err error) bool {
 
 // Minter mints workload tokens.
 type Minter interface {
-	Mint(ctx context.Context, workspace, subject, owner string) (Token, error)
+	Mint(ctx context.Context, workspace, subject, owner, roleCeiling string) (Token, error)
 }
 
 // CoreMinter calls core's minting endpoint with the credential core delivers as the
@@ -78,8 +81,8 @@ type CoreMinter struct {
 }
 
 // Mint implements Minter.
-func (m *CoreMinter) Mint(ctx context.Context, workspace, subject, owner string) (Token, error) {
-	body, _ := json.Marshal(map[string]string{"workspace": workspace, "subject": subject, "roleCeiling": RoleCeiling, "owner": owner})
+func (m *CoreMinter) Mint(ctx context.Context, workspace, subject, owner, roleCeiling string) (Token, error) {
+	body, _ := json.Marshal(map[string]string{"workspace": workspace, "subject": subject, "roleCeiling": roleCeiling, "owner": owner})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.URL, bytes.NewReader(body))
 	if err != nil {
 		return Token{}, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +24,9 @@ func dataRouter(t *testing.T, s *runs.Store) http.Handler {
 }
 
 // Data access on /v1 (docs/design-v0.md items 4 and 6): a run or session that asks for it gets a
-// data bearer, never shown; it shows what it asked for; a workload token gets none of it (422,
-// ADR 0110 ruling 5), an entry point in booth-storage included.
+// data bearer, never shown; it shows what it asked for; a workload token without a pipeline's
+// signed owner gets none of it (422, ADR 0110 ruling 5 as ADR 0119 leaves it), an entry point in
+// booth-storage included.
 func TestData_Submit(t *testing.T) {
 	s := testStore(t)
 	h := dataRouter(t, s)
@@ -75,5 +77,171 @@ func TestData_Submit(t *testing.T) {
 	}
 	if rec := call(h, "editor", "acme", "POST", "/v1/applications", `{"name":"x","main":{"inlinePython":"1"},"dataAccess":{"storage":[{"backendId":"b","path":"../x"}]}}`); rec.Code != 400 {
 		t.Errorf("a climbing path: %d", rec.Code)
+	}
+}
+
+// ADR 0119 (amendments 2 and 3): a run the pipeline module submits reads and writes as the
+// pipeline's owner. Trust rests on core's signed booth_module claim plus booth_owner; the subject
+// kind is a second guard only.
+func TestData_PipelineSubmit(t *testing.T) {
+	s := testStore(t)
+	h := dataRouter(t, s)
+	ctx := context.Background()
+	const write = `"dataAccess":{"storage":[{"backendId":"spark","path":"smoke","access":"readwrite"}]}`
+	recorded := func(t *testing.T, body []byte) runs.Run {
+		t.Helper()
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		id, _ := v["id"].(string)
+		got, err := s.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("no run recorded: %v (%s)", err, body)
+		}
+		return got
+	}
+
+	// 1. An owner in the body is refused (DisallowUnknownFields), wherever it is put, and nothing
+	// is recorded.
+	for name, body := range map[string]string{
+		"top level":      `{"name":"x","main":{"inlinePython":"1"},"owner":"u-mallory",` + write + `}`,
+		"in dataAccess":  `{"name":"x","main":{"inlinePython":"1"},"dataAccess":{"owner":"u-mallory","storage":[{"backendId":"spark","path":"smoke","access":"readwrite"}]}}`,
+		"as booth_owner": `{"name":"x","main":{"inlinePython":"1"},"booth_owner":"u-mallory",` + write + `}`,
+	} {
+		if rec := call(h, "pipeline", "acme", "POST", "/v1/applications", body); rec.Code != 400 {
+			t.Errorf("a body owner %s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if list, _ := s.List(ctx, "acme", "application", 50); len(list) != 0 {
+		t.Fatalf("a refused submission was recorded: %+v", list)
+	}
+
+	// 2. A pipeline token without the owner claim: no data access, and no entry point from
+	// booth-storage; without data it runs as before.
+	for name, body := range map[string]string{
+		"storage":               `{"name":"x","main":{"inlinePython":"1"},` + write + `}`,
+		"a storage entry point": `{"name":"x","main":{"python":{"backendId":"spark","path":"a.py"}}}`,
+	} {
+		rec := call(h, "pipeline-no-owner", "acme", "POST", "/v1/applications", body)
+		if rec.Code != 422 || !strings.Contains(rec.Body.String(), "booth_owner") {
+			t.Errorf("no owner claim, %s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if rec := call(h, "pipeline-no-owner", "acme", "POST", "/v1/applications", `{"name":"pi","main":{"inlinePython":"1"}}`); rec.Code != 201 {
+		t.Errorf("no owner claim, no data: %d %s", rec.Code, rec.Body)
+	}
+
+	// Trust is the minting module (amendment 3, ruling 1): a token from another minting module gets
+	// 422 even with a pipeline-shaped subject and an owner claim, as does a run's own spark token
+	// and a token naming no module. The subject kind is the second guard.
+	for who, want := range map[string]string{
+		"streamlit-as-pipeline": "minted for module streamlit",
+		"spark-run":             "minted for module spark",
+		"no-module":             "minted for no named module",
+		"run":                   "minted for no named module",
+		"pipeline-old-sub":      "this token's subject is run:p12",
+	} {
+		rec := call(h, who, "acme", "POST", "/v1/applications", `{"name":"x","main":{"inlinePython":"1"},`+write+`}`)
+		if rec.Code != 422 || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: %d %s, want 422 mentioning %q", who, rec.Code, rec.Body, want)
+		}
+	}
+
+	// 3. A pipeline holding only a viewer's role can't submit at all, so it never gets as far as a
+	// write (a viewer-capped token's refusal is internal/dataaccess's test). The ceiling is the
+	// lesser of editor and the token's role.
+	if rec := call(h, "pipeline-viewer", "acme", "POST", "/v1/applications", `{"name":"x","main":{"inlinePython":"1"},`+write+`}`); rec.Code != 403 {
+		t.Errorf("a viewer pipeline: %d %s", rec.Code, rec.Body)
+	}
+	for role, want := range map[auth.Role]string{auth.RoleViewer: "viewer", auth.RoleEditor: "editor", auth.RoleOwner: "editor"} {
+		if got := dataRoleCeiling(role); got != want {
+			t.Errorf("ceiling for a %s token = %s, want %s", role, got, want)
+		}
+	}
+
+	// 5. The positive control: recorded as the pipeline's run, reading as its owner, capped at
+	// editor, fixed at submit; shown with its owner and, even running, no Spark UI link.
+	rec := call(h, "pipeline", "acme", "POST", "/v1/applications", `{"name":"weekly","main":{"inlinePython":"1"},`+write+`}`)
+	if rec.Code != 201 {
+		t.Fatalf("pipeline with a claim: %d %s", rec.Code, rec.Body)
+	}
+	got := recorded(t, rec.Body.Bytes())
+	if got.Submitter != "pipeline:acme:p8" || !got.Workload || got.DataOwner != "u-alice" || got.DataCeiling != "editor" ||
+		got.DataOwnerID() != "u-alice" || len(got.DataBearer) != 64 {
+		t.Errorf("recorded %+v", got)
+	}
+	if err := s.MarkRunning(ctx, got.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	g := call(h, "pipeline", "acme", "GET", "/v1/applications/"+got.ID, "")
+	var v map[string]any
+	_ = json.Unmarshal(g.Body.Bytes(), &v)
+	if v["dataOwner"] != "u-alice" || v["dataCeiling"] != "editor" || v["workload"] != true || v["state"] != "running" {
+		t.Errorf("GET shows %s", g.Body)
+	}
+	if _, ok := v["uiPath"]; ok {
+		t.Errorf("a pipeline's running run has a Spark UI link: %s", g.Body)
+	}
+
+	// Another token with the same subject (the pipeline run's next task) reads, follows and stops
+	// it (amendment 3, ruling 7); a different pipeline run's token, in the same workspace, doesn't.
+	if g := call(h, "pipeline-task2", "acme", "GET", "/v1/applications/"+got.ID+"/logs", ""); g.Code != 200 {
+		t.Errorf("logs, same subject: %d %s", g.Code, g.Body)
+	}
+	if g := call(h, "pipeline-svc", "acme", "GET", "/v1/applications/"+got.ID+"/logs", ""); g.Code != 403 {
+		t.Errorf("logs, another pipeline run: %d %s", g.Code, g.Body)
+	}
+	if g := call(h, "pipeline-svc", "acme", "POST", "/v1/applications/"+got.ID+"/stop", ""); g.Code != 403 {
+		t.Errorf("stop, another pipeline run: %d %s", g.Code, g.Body)
+	}
+	if g := call(h, "pipeline-task2", "acme", "POST", "/v1/applications/"+got.ID+"/stop", ""); g.Code != 202 && g.Code != 200 {
+		t.Errorf("stop, same subject: %d %s", g.Code, g.Body)
+	}
+
+	// A service-account owner is opaque, and an entry point in booth-storage is allowed.
+	rec = call(h, "pipeline-svc", "acme", "POST", "/v1/applications", `{"name":"backfill","main":{"python":{"backendId":"spark","path":"jobs/b.py"}}}`)
+	if rec.Code != 201 {
+		t.Fatalf("service-account owner with a storage entry point: %d %s", rec.Code, rec.Body)
+	}
+	if got := recorded(t, rec.Body.Bytes()); got.DataOwner != "svc:acme:nightly" || got.DataCeiling != "editor" {
+		t.Errorf("recorded %+v", got)
+	}
+
+	// A person's run is unchanged: no owner or ceiling recorded, and its Spark UI link stays.
+	rec = call(h, "editor", "acme", "POST", "/v1/applications", `{"name":"mine","main":{"inlinePython":"1"},`+write+`}`)
+	mine := recorded(t, rec.Body.Bytes())
+	if mine.DataOwner != "" || mine.DataCeiling != "" || mine.DataOwnerID() != "e-1" || mine.DataRoleCeiling() != "editor" {
+		t.Errorf("a person's run: %+v", mine)
+	}
+	if err := s.MarkRunning(ctx, mine.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if g := call(h, "editor", "acme", "GET", "/v1/applications/"+mine.ID, ""); !strings.Contains(g.Body.String(), `"uiPath"`) || strings.Contains(g.Body.String(), "dataOwner") {
+		t.Errorf("a person's running run: %s", g.Body)
+	}
+
+	// Idempotency-Key is scoped to the subject: the same pipeline run's next token gets the first run
+	// back (200); another pipeline run with the same key gets its own.
+	idem := func(who string) (int, string) {
+		req := httptest.NewRequest("POST", "/v1/applications", strings.NewReader(`{"name":"idem","main":{"inlinePython":"1"},`+write+`}`))
+		req.Header.Set("Authorization", "Bearer "+who)
+		req.Header.Set(auth.HeaderBoothWorkspace, "acme")
+		req.Header.Set("Idempotency-Key", "pipeline-run-p8-task-spark")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var v map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &v)
+		id, _ := v["id"].(string)
+		return rec.Code, id
+	}
+	c1, first := idem("pipeline")
+	c2, again := idem("pipeline-task2")
+	c3, other := idem("pipeline-svc")
+	if c1 != 201 || c2 != 200 || again != first || c3 != 201 || other == first {
+		t.Errorf("idempotency: %d %s, same subject %d %s, other subject %d %s", c1, first, c2, again, c3, other)
+	}
+
+	// Sessions are outside ADR 0119: a pipeline's session gets no data access, claim or not.
+	if rec := call(h, "pipeline", "acme", "POST", "/v1/sessions", `{"name":"x","dataAccess":{"lakehouse":true}}`); rec.Code != 422 {
+		t.Errorf("a pipeline's session with data: %d %s", rec.Code, rec.Body)
 	}
 }

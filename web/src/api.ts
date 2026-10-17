@@ -69,6 +69,10 @@ export interface Run {
   idleTimeout?: string;
   maxLifetime?: string;
   uiPath?: string;
+  // A run a pipeline submitted (ADR 0119): whom it reads and writes data as (a person's subject or
+  // svc:<workspace>:<name>, shown as is) and its token's ceiling, fixed at submit.
+  dataOwner?: string;
+  dataCeiling?: "editor" | "viewer";
   dataAccess?: DataView;
   main?: { inlinePythonBytes?: number; inlinePythonSha256?: string; python?: { backendId: string; path: string }; jar?: { backendId: string; path: string }; mainClass?: string };
 }

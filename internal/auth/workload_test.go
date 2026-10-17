@@ -212,3 +212,69 @@ func TestMiddleware_OperatorAndWorkload(t *testing.T) {
 		})
 	}
 }
+
+// ADR 0119: booth_owner is read off core's workload tokens only. A human token carrying the same
+// claim names nobody, and a claim of the wrong shape is no owner (fail closed).
+func TestVerifier_OwnerClaim(t *testing.T) {
+	idp := authtest.New(t)
+	core := authtest.NewCore(t)
+	ctx := context.Background()
+	v, err := auth.NewVerifier(ctx, auth.OIDCConfig{IssuerURL: idp.URL, ClientID: "booth-spark", RequireAudience: true, WorkloadIssuerURL: core.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := func(o any) map[string]any { return map[string]any{auth.OwnerClaim: o} }
+	cases := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{"workload token with a person owner", core.Mint(t, authtest.Token{Subject: "pipeline:7", Audience: "booth-spark", Extra: owner("u-alice")}), "u-alice"},
+		{"workload token with a service-account owner", core.Mint(t, authtest.Token{Subject: "pipeline:7", Audience: "booth-spark", Extra: owner("svc:acme:nightly")}), "svc:acme:nightly"},
+		{"workload token without the claim", core.Mint(t, authtest.Token{Subject: "pipeline:7", Audience: "booth-spark"}), ""},
+		{"workload token with a non-string claim", core.Mint(t, authtest.Token{Subject: "pipeline:7", Audience: "booth-spark", Extra: owner(42)}), ""},
+		{"human token carrying the claim", idp.Mint(t, authtest.Token{Subject: "mallory", Audience: "booth-spark", Extra: owner("u-alice")}), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			claims, err := v.Verify(ctx, tc.token)
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if claims.Owner != tc.want {
+				t.Errorf("Owner = %q, want %q", claims.Owner, tc.want)
+			}
+		})
+	}
+
+	// booth_module (ADR 0058), the trust root of ADR 0119's rule, on the same terms.
+	module := func(m any) map[string]any { return map[string]any{auth.ModuleClaim: m, auth.OwnerClaim: "u-alice"} }
+	for name, c := range map[string]struct {
+		token string
+		want  string
+	}{
+		"workload token from the pipeline module": {core.Mint(t, authtest.Token{Subject: "pipeline:acme:r1", Audience: "booth-spark", Extra: module("pipeline")}), "pipeline"},
+		"workload token from another module":      {core.Mint(t, authtest.Token{Subject: "pipeline:acme:r1", Audience: "booth-spark", Extra: module("streamlit")}), "streamlit"},
+		"workload token with a non-string claim":  {core.Mint(t, authtest.Token{Subject: "pipeline:acme:r1", Audience: "booth-spark", Extra: module(true)}), ""},
+		"human token carrying the claim":          {idp.Mint(t, authtest.Token{Subject: "mallory", Audience: "booth-spark", Extra: module("pipeline")}), ""},
+	} {
+		claims, err := v.Verify(ctx, c.token)
+		if err != nil {
+			t.Fatalf("%s: Verify: %v", name, err)
+		}
+		if claims.Module != c.want {
+			t.Errorf("%s: Module = %q, want %q", name, claims.Module, c.want)
+		}
+	}
+}
+
+func TestWorkloadKind(t *testing.T) {
+	for sub, want := range map[string]string{
+		"pipeline:42": "pipeline", "spark:acme:r1": "spark", "streamlit:acme:a1": "streamlit",
+		"alice": "", "": "", "Pipeline:1": "", "pipeline:": "",
+	} {
+		if got := auth.WorkloadKind(sub); got != want {
+			t.Errorf("WorkloadKind(%q) = %q, want %q", sub, got, want)
+		}
+	}
+}

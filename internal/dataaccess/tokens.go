@@ -14,7 +14,29 @@ const RefusalMemory = 30 * time.Second
 type Run struct {
 	ID        string
 	Workspace string
-	Submitter string
+	// Owner is whom the run reads and writes data as (runs.Run.DataOwnerID): its submitter, or for
+	// a run a pipeline submitted, the pipeline's owner (ADR 0119). Opaque: core resolves it.
+	Owner string
+	// Ceiling caps the token: editor, or viewer for a run a viewer-role pipeline submitted.
+	Ceiling string
+	// Pipeline is true for a run a pipeline submitted; refusals then name the owner, not the
+	// submitter.
+	Pipeline bool
+}
+
+// Who names the run's owner in a refusal.
+func (r Run) Who() string {
+	if r.Pipeline {
+		return "the run's owner (" + r.Owner + ", the owner of the pipeline that submitted it)"
+	}
+	return "the run's submitter"
+}
+
+func (r Run) ceiling() string {
+	if r.Ceiling != "" {
+		return r.Ceiling
+	}
+	return RoleCeiling
 }
 
 // Tokens keeps each live run's current workload token in memory, re-minting once RemintAfter of
@@ -59,8 +81,9 @@ func (t *Tokens) Get(ctx context.Context, r Run) (Token, error) {
 		}
 	}
 
-	tok, err := t.Minter.Mint(ctx, r.Workspace, Subject(r.Workspace, r.ID), r.Submitter)
-	if err == nil && tok.Role != "editor" && tok.Role != "viewer" {
+	ceiling := r.ceiling()
+	tok, err := t.Minter.Mint(ctx, r.Workspace, Subject(r.Workspace, r.ID), r.Owner, ceiling)
+	if err == nil && (tok.Role != "editor" && tok.Role != "viewer" || ceiling == "viewer" && tok.Role != "viewer") {
 		err = ErrRoleExceeded
 	}
 	t.mu.Lock()
