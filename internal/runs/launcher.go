@@ -278,12 +278,41 @@ func (l *Launcher) Driver(ctx context.Context, ns string) (DriverState, error) {
 	return st, nil
 }
 
-// LogTail returns up to maxBytes from the end of the driver's log ("" if there is none).
-func (l *Launcher) LogTail(ctx context.Context, ns string, maxBytes int64) (string, error) {
-	// The API can only limit bytes from the start of a log; the last lines, trimmed to maxBytes,
-	// are what's useful at the end of a run.
-	tail := int64(20000)
-	return l.logs(ctx, ns, &corev1.PodLogOptions{Container: "driver", TailLines: &tail}, maxBytes)
+// LogTail returns up to maxBytes from the end of the driver's log ("" if there is none), and the
+// kept text's byte offset in the whole log, which the log cursor needs after the run ends. The
+// API can only limit bytes from the start of a log, so this reads all of it, keeping only the end.
+func (l *Launcher) LogTail(ctx context.Context, ns string, maxBytes int64) (string, int64, error) {
+	rc, err := l.driverLog(ctx, ns, &corev1.PodLogOptions{Container: "driver"})
+	if err != nil || rc == nil {
+		return "", 0, err
+	}
+	defer rc.Close()
+	tail, offset, err := keepTail(rc, maxBytes)
+	if err != nil {
+		return "", 0, err
+	}
+	return string(tail), offset, nil
+}
+
+// LogFrom returns the driver's log from byte offset from, at most max bytes (see logcursor.go),
+// and how far the log reached: less than from when it is shorter.
+func (l *Launcher) LogFrom(ctx context.Context, ns string, from int64, max int) ([]byte, int64, error) {
+	limit := from + int64(max)
+	rc, err := l.driverLog(ctx, ns, &corev1.PodLogOptions{Container: "driver", LimitBytes: &limit})
+	if err != nil || rc == nil {
+		return nil, 0, err
+	}
+	defer rc.Close()
+	return readFrom(rc, from, max)
+}
+
+// driverLog opens the driver's log; nil with no error when it has none yet.
+func (l *Launcher) driverLog(ctx context.Context, ns string, opts *corev1.PodLogOptions) (io.ReadCloser, error) {
+	rc, err := l.Kube.CoreV1().Pods(ns).GetLogs(DriverPod, opts).Stream(ctx)
+	if apierrors.IsNotFound(err) || (apierrors.IsBadRequest(err) && strings.Contains(err.Error(), "waiting to start")) {
+		return nil, nil
+	}
+	return rc, err
 }
 
 // Logs streams up to maxBytes of the driver's log, last tailLines lines.

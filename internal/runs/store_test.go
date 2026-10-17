@@ -193,8 +193,8 @@ func (f *fakeCluster) Delete(_ context.Context, ns string) error {
 func (f *fakeCluster) Driver(_ context.Context, ns string) (DriverState, error) {
 	return f.driver[ns], nil
 }
-func (f *fakeCluster) LogTail(_ context.Context, ns string, _ int64) (string, error) {
-	return "log of " + ns, nil
+func (f *fakeCluster) LogTail(_ context.Context, ns string, _ int64) (string, int64, error) {
+	return "log of " + ns, 1000, nil
 }
 func (f *fakeCluster) RunNamespaces(context.Context) (map[string]RunNamespace, error) {
 	return f.namespaces, nil
@@ -223,6 +223,10 @@ func TestController(t *testing.T) {
 	tail, _ := s.LogTail(ctx, r.ID)
 	if got.State != Succeeded || tail != "log of "+r.Namespace || len(f.deleted) != 1 || f.deleted[0] != r.Namespace {
 		t.Errorf("succeeded: %+v tail %q deleted %v", got, tail, f.deleted)
+	}
+	// The kept tail's offset in the whole log, for the log cursor.
+	if text, off, err := s.LogTailAt(ctx, r.ID); err != nil || text != tail || off != 1000 {
+		t.Errorf("LogTailAt = %q %d %v", text, off, err)
 	}
 
 	// A driver that can never start fails the run.

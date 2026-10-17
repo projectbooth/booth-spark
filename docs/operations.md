@@ -209,6 +209,18 @@ about every 30 seconds, so content can outlive the retention by that much.
 Until then, the content is in the module's own database, and it can hold workspace data: what a
 query returned, or what a run printed.
 
+## Following a run's log
+
+`GET /v1/applications/{id}/logs?from=<offset>` is a cursor over the driver's log: it returns the log
+from that byte offset, at most 1 MiB, and the offset to ask for next in `X-Log-Offset`; a caller
+starts at 0 and polls with the last offset until `X-Log-Complete: true` (the run has ended and the
+cursor has reached its log's end). Offsets count bytes of the driver's whole log, so they mean the
+same while the run lives and after it ends. After the end only the last 1 MiB is kept: an offset
+before it returns what is kept, with `X-Log-Skipped` saying how many bytes are gone. The same people
+read it as the plain log: the run's submitter (any token with the submission's subject, such as
+each task of one pipeline run), workspace owners and operators. While a run lives, each read
+streams its log from the start up to the offset asked for; for a very long log, poll less often.
+
 ## Data access
 
 Off by default (`dataAccess.enabled`). With it on, a run reads and writes data as its submitter,

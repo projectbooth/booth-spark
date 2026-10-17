@@ -299,12 +299,17 @@ func (s *Store) MarkRunning(ctx context.Context, id string, at time.Time) error 
 // Finish moves a live run to a terminal state with its reason and the tail of its driver log.
 // It never overwrites a run that is already terminal.
 func (s *Store) Finish(ctx context.Context, id string, st State, reason, logTail string, at time.Time) error {
+	return s.FinishAt(ctx, id, st, reason, logTail, 0, at)
+}
+
+// FinishAt is Finish with the kept tail's byte offset in the driver's whole log (the log cursor).
+func (s *Store) FinishAt(ctx context.Context, id string, st State, reason, logTail string, logOffset int64, at time.Time) error {
 	if !st.Terminal() {
 		return fmt.Errorf("finish: %s is not terminal", st)
 	}
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE runs SET state = $2, reason = $3, log_tail = $4, finished_at = $5
-			WHERE id = $1 AND state IN ('pending', 'running')`, id, st, truncate(reason, 1000), logTail, at)
+		tag, err := tx.Exec(ctx, `UPDATE runs SET state = $2, reason = $3, log_tail = $4, finished_at = $5, log_tail_offset = $6
+			WHERE id = $1 AND state IN ('pending', 'running')`, id, st, truncate(reason, 1000), logTail, at, logOffset)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
@@ -366,6 +371,14 @@ func (s *Store) ByDataBearer(ctx context.Context, bearer string) (Run, error) {
 		return Run{}, ErrNotFound
 	}
 	return r, err
+}
+
+// LogTailAt returns the driver log kept when the run ended and its byte offset in the whole log.
+func (s *Store) LogTailAt(ctx context.Context, id string) (string, int64, error) {
+	var tail string
+	var offset int64
+	err := s.db.QueryRow(ctx, `SELECT log_tail, log_tail_offset FROM runs WHERE id = $1`, id).Scan(&tail, &offset)
+	return tail, offset, err
 }
 
 // LogTail returns the driver log kept when the run ended.

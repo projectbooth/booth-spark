@@ -179,18 +179,43 @@ paths:
       tags: [applications]
       operationId: getApplicationLogs
       summary: The driver's log (its submitter, a workspace owner or a platform operator)
-      description: Live while the run is live; afterwards, the last 1 MiB kept when it ended, until sessions.resultRetention after that (then 410 cleared).
+      description: |
+        Live while the run is live; afterwards, the last 1 MiB kept when it ended, until
+        sessions.resultRetention after that (then 410 cleared).
+
+        With `from`, a cursor: the log from that byte offset of the driver's whole log, at most
+        1 MiB, with the offset to ask for next in `X-Log-Offset`. Offsets mean the same while the
+        run lives and after it ends, so a caller polls with the last `X-Log-Offset` until
+        `X-Log-Complete: true`. After the end only the kept tail is left: asking for an offset
+        before it returns the tail, and `X-Log-Skipped` says how many bytes are gone. A full
+        piece ends at a line's end; no piece ends inside a character; a byte that isn't UTF-8 is
+        shown as `?`. An offset beyond the log's end is 400.
       parameters:
         - $ref: "#/components/parameters/Workspace"
         - $ref: "#/components/parameters/RunID"
         - name: tail
           in: query
           required: false
-          description: Lines from the end of a live log (default 500)
+          description: Lines from the end of a live log (default 500). Not with from.
           schema: {type: integer, minimum: 1, maximum: 10000}
+        - name: from
+          in: query
+          required: false
+          description: A byte offset in the driver's whole log (0, or a previous X-Log-Offset)
+          schema: {type: integer, minimum: 0, format: int64}
       responses:
         "200":
-          description: The log
+          description: The log, or with from, the next piece of it
+          headers:
+            X-Log-Offset:
+              description: With from, the offset to ask for next
+              schema: {type: integer, format: int64}
+            X-Log-Complete:
+              description: With from, "true" once the run has ended and this piece reaches its log's end
+              schema: {type: string, enum: ["true"]}
+            X-Log-Skipped:
+              description: With from, after the run ended, how many bytes before the kept tail are gone
+              schema: {type: integer, format: int64}
           content:
             text/plain:
               schema: {type: string}
