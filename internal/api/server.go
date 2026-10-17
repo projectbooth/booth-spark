@@ -110,8 +110,18 @@ func NewRouter(deps Deps) http.Handler {
 				SubmitMinRole: string(deps.SubmitMinRole),
 			})
 		})
-		if deps.Applications != nil {
-			deps.Applications.routes(v1, deps.SubmitMinRole)
+		if a := deps.Applications; a != nil {
+			// What this caller may request (docs/design-v0.md item 6), so a client doesn't guess:
+			// the limits the module's own UI shows, for any caller with a role in the workspace.
+			// booth-pipeline also reads a 200 here as "booth-spark is installed".
+			v1.Get("/limits", func(w http.ResponseWriter, r *http.Request) {
+				id, _ := auth.FromContext(r.Context())
+				writeJSON(w, http.StatusOK, callerLimits{
+					uiLimits: limitsOf(a.Limits), Role: string(id.Role), CanSubmit: canSubmit(id.Role, deps.SubmitMinRole),
+					SubmitMinRole: string(deps.SubmitMinRole), MaxStorageLocations: runs.MaxStorageLocations,
+				})
+			})
+			a.routes(v1, deps.SubmitMinRole)
 		}
 		// The interface's own documentation (docs/design-v0.md item 6), for any authenticated caller.
 		v1.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
@@ -143,11 +153,8 @@ func NewRouter(deps Deps) http.Handler {
 					SubmitMinRole: string(deps.SubmitMinRole),
 				}
 				if a := deps.Applications; a != nil {
-					l := a.Limits
-					m.Limits = &uiLimits{MaxExecutors: l.MaxExecutors, DefaultExecutors: l.DefaultExecutors, DriverMemory: l.DriverMemory,
-						ExecutorMemory: l.ExecutorMemory, MaxMemory: l.MaxMemory, MaxDuration: l.MaxDuration.String(),
-						SessionIdleTimeout: l.SessionIdleTimeout.String(), SessionMaxLifetime: l.SessionMaxLifetime.String(),
-						DataAccess: l.Data}
+					l := limitsOf(a.Limits)
+					m.Limits = &l
 				}
 				writeJSON(w, http.StatusOK, m)
 			})
@@ -248,6 +255,22 @@ type uiLimits struct {
 	SessionIdleTimeout string          `json:"sessionIdleTimeout"`
 	SessionMaxLifetime string          `json:"sessionMaxLifetime"`
 	DataAccess         runs.DataLimits `json:"dataAccess"`
+}
+
+func limitsOf(l runs.Limits) uiLimits {
+	return uiLimits{MaxExecutors: l.MaxExecutors, DefaultExecutors: l.DefaultExecutors, DriverMemory: l.DriverMemory,
+		ExecutorMemory: l.ExecutorMemory, MaxMemory: l.MaxMemory, MaxDuration: l.MaxDuration.String(),
+		SessionIdleTimeout: l.SessionIdleTimeout.String(), SessionMaxLifetime: l.SessionMaxLifetime.String(),
+		DataAccess: l.Data}
+}
+
+// callerLimits is GET /v1/limits: the install's limits plus what this caller may do with them.
+type callerLimits struct {
+	uiLimits
+	Role                string `json:"role"`
+	CanSubmit           bool   `json:"canSubmit"`
+	SubmitMinRole       string `json:"submitMinRole"`
+	MaxStorageLocations int    `json:"maxStorageLocations"`
 }
 
 // asIdentity gives the UI's API the identity /v1's handlers read, from core's verified assertion.

@@ -66,6 +66,27 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
+  /limits:
+    get:
+      tags: [identity]
+      operationId: getLimits
+      summary: What this caller may request, so a client doesn't guess
+      description: |
+        The install's limits (the same ones the module's own page shows) and whether this caller may
+        submit. Any caller with a role in the workspace gets 200, workload tokens included; a client
+        may read the 200 as "booth-spark is installed for this workspace".
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+      responses:
+        "200":
+          description: The limits
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Limits"
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
   /applications:
     get:
       tags: [applications]
@@ -457,6 +478,31 @@ components:
         workload: {type: boolean}
         canSubmit: {type: boolean}
         submitMinRole: {type: string, enum: [editor, owner]}
+    Limits:
+      type: object
+      required: [maxExecutors, defaultExecutors, driverMemory, executorMemory, maxMemory, maxDuration,
+        sessionIdleTimeout, sessionMaxLifetime, dataAccess, role, canSubmit, submitMinRole, maxStorageLocations]
+      properties:
+        maxExecutors: {type: integer, description: The most executors one run may scale to}
+        defaultExecutors: {type: integer, description: Executors when a run asks for none}
+        driverMemory: {type: string, description: "The driver's heap when a run asks for none (e.g. 512m)"}
+        executorMemory: {type: string, description: "Each executor's heap when a run asks for none"}
+        maxMemory: {type: string, description: "The largest heap a run may ask for, driver or executor (e.g. 2g)"}
+        maxDuration: {type: string, description: "The longest a run may live, as a Go duration (e.g. 6h0m0s); a run's maxDuration may be at most this"}
+        sessionIdleTimeout: {type: string, description: "A session's default idle timeout, as a Go duration"}
+        sessionMaxLifetime: {type: string, description: "The longest any session lives, as a Go duration"}
+        dataAccess:
+          type: object
+          description: Which data paths this install offers runs (dataAccess in a run's body)
+          required: [database, lakehouse, storage]
+          properties:
+            database: {type: boolean}
+            lakehouse: {type: boolean}
+            storage: {type: boolean}
+        role: {type: string, enum: [owner, editor, viewer], description: "The caller's role in the workspace"}
+        canSubmit: {type: boolean, description: Whether this caller may submit applications and start sessions}
+        submitMinRole: {type: string, enum: [editor, owner]}
+        maxStorageLocations: {type: integer, description: The most storage locations one run may name}
     State:
       type: string
       enum: [pending, running, succeeded, failed, stopped]
