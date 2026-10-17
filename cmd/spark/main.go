@@ -135,6 +135,7 @@ func run() error {
 			LiveLogs: func(ctx context.Context, ns string, tail int64) (string, error) {
 				return launcher.Logs(ctx, ns, tail, 1<<20)
 			},
+			LiveLogFrom: launcher.LogFrom,
 		}
 		log.Printf("runs: instance=%s image=%s maxRunning=%d memoryBudget=%dMi egress=%s sessions: idle=%s lifetime=%s",
 			rc.Instance, rc.Image, rc.MaxRunning, rc.MemoryBudgetMi, rc.Egress.Mode, cfg.SessionIdleTimeout, cfg.SessionMaxLifetime)

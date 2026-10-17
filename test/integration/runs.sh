@@ -6,7 +6,9 @@
 #     namespace is gone;
 #   - a viewer can't submit; nobody but the submitter, an owner or an operator reads its logs;
 #   - an application that fails is "failed" with the driver's exit; a stopped one is "stopped";
-#   - admission refuses what doesn't fit.
+#   - admission refuses what doesn't fit;
+#   - the log cursor (?from=<offset>, X-Log-Offset) reads a live run's log in pieces that join up,
+#     and goes on at the same offsets after it ends, through core's gateway.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
@@ -64,6 +66,48 @@ v1 "$T_owner" GET "/applications/$id/logs"
 v1 "$T_editor2" GET "/applications/$id/logs"
 [ "$code" = 200 ] || fail "an operator can't read a run's logs: $code"
 echo "ok: viewers and operators don't submit; logs for submitter, owners and operators"
+
+step "the log cursor follows a live run and goes on after it ends (ADR 0119 amendment 3)"
+# cursor_get ID FROM: GET ?from=FROM; sets body, code and the X-Log-* headers.
+cursor_get() {
+  local hdr
+  code=$(curl -s -D /tmp/cursor-hdr -o /tmp/cursor-body -w '%{http_code}' -H "Authorization: Bearer $T_editor" \
+    -H "X-Workspace: $WS" "$core/modules/spark/v1/applications/$1/logs?from=$2")
+  hdr=$(tr -d '\r' </tmp/cursor-hdr)
+  offset=$(echo "$hdr" | sed -n 's/^[Xx]-[Ll]og-[Oo]ffset: //p' | tail -1)
+  complete=$(echo "$hdr" | sed -n 's/^[Xx]-[Ll]og-[Cc]omplete: //p' | tail -1)
+  skipped=$(echo "$hdr" | sed -n 's/^[Xx]-[Ll]og-[Ss]kipped: //p' | tail -1)
+}
+ticker=$(submit "$T_editor" ticker "import time
+for i in range(40):
+    print('CURSOR', i, flush=True)
+    time.sleep(0.5)" '{"resources":{"executors":{"max":0}}}')
+: >/tmp/cursor-joined
+from=0 reads=0 live_reads=0 complete=""
+for _ in $(seq 1 400); do
+  cursor_get "$ticker" "$from"
+  [ "$code" = 200 ] || fail "cursor from $from: $code $(cat /tmp/cursor-body)"
+  [ -n "$offset" ] || fail "no X-Log-Offset (did the gateway drop it?)"
+  [ -z "$skipped" ] || fail "the cursor skipped $skipped bytes of a short log"
+  cat /tmp/cursor-body >>/tmp/cursor-joined
+  [ "$offset" = $((from + $(wc -c </tmp/cursor-body))) ] || fail "offset $offset after $(wc -c </tmp/cursor-body) bytes from $from"
+  from=$offset reads=$((reads + 1))
+  [ "$complete" = true ] && break
+  live_reads=$((live_reads + 1))
+  sleep 1
+done
+[ "$complete" = true ] || fail "the cursor never reached the end of the ended run's log"
+[ "$live_reads" -ge 3 ] || fail "only $live_reads reads while the run lived"
+for i in $(seq 0 39); do
+  [ "$(grep -c "^CURSOR $i\$" /tmp/cursor-joined)" = 1 ] || fail "CURSOR $i appears $(grep -c "^CURSOR $i\$" /tmp/cursor-joined) times in the joined log"
+done
+# After the end, from 0 is the kept tail: the whole (short) log, byte for byte what the cursor read.
+cursor_get "$ticker" 0
+cmp -s /tmp/cursor-body /tmp/cursor-joined || fail "the kept log differs from the cursor's pieces ($(wc -c </tmp/cursor-body) vs $(wc -c </tmp/cursor-joined) bytes)"
+[ "$offset" = "$from" ] && [ "$complete" = true ] || fail "after the end: offset $offset complete $complete, want $from true"
+cursor_get "$ticker" $((from + 1))
+[ "$code" = 400 ] || fail "beyond the end: $code"
+echo "ok: $reads cursor reads ($live_reads while live) joined into the kept log, $from bytes"
 
 step "a failing application is failed, with the driver's exit"
 bad=$(submit "$T_editor" boom "raise SystemExit(3)" '{"resources":{"executors":{"max":0}}}')
