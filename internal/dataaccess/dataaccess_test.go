@@ -21,8 +21,9 @@ import (
 type fakeCore struct {
 	mu       sync.Mutex
 	mints    int
-	brokered []string // "kind access scope X-Workspace"
-	forwards []string // "METHOD path?query auth X-Workspace"
+	lastMint map[string]string // the last mint request's body
+	brokered []string          // "kind access scope X-Workspace"
+	forwards []string          // "METHOD path?query auth X-Workspace"
 	srv      *httptest.Server
 }
 
@@ -42,11 +43,18 @@ func newFakeCore(t *testing.T) *fakeCore {
 			f.mints++
 			var req map[string]string
 			_ = json.Unmarshal(body, &req)
-			if r.Header.Get("Authorization") != "Bearer mint-cred" || req["roleCeiling"] != "editor" {
+			f.lastMint = req
+			if r.Header.Get("Authorization") != "Bearer mint-cred" || (req["roleCeiling"] != "editor" && req["roleCeiling"] != "viewer") {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			role := map[string]string{"u-editor": "editor", "u-viewer": "viewer", "u-owner": "owner"}[req["owner"]]
+			// Owners are opaque: a person's sub or a service account (ADR 0120); core resolves the
+			// role and grants the lesser of it and the ceiling. u-owner stands for a core that
+			// wrongly grants more.
+			role := map[string]string{"u-editor": "editor", "u-viewer": "viewer", "u-owner": "owner", "svc:acme:nightly": "editor"}[req["owner"]]
+			if role == "editor" && req["roleCeiling"] == "viewer" {
+				role = "viewer"
+			}
 			if role == "" {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = io.WriteString(w, `{"error":"the run's owner has no current access to that workspace"}`)
@@ -103,7 +111,7 @@ func TestTokens_RemintAndRefusal(t *testing.T) {
 	now := time.Now()
 	tk := newTokens(f)
 	tk.Now = func() time.Time { return now }
-	r := Run{ID: "r1", Workspace: "acme", Submitter: "u-editor"}
+	r := Run{ID: "r1", Workspace: "acme", Owner: "u-editor"}
 	a, err := tk.Get(context.Background(), r)
 	if err != nil || a.Role != "editor" || a.Access() != "readwrite" {
 		t.Fatalf("first: %+v %v", a, err)
@@ -116,7 +124,7 @@ func TestTokens_RemintAndRefusal(t *testing.T) {
 		t.Errorf("not re-minted after two thirds: %v, %d mints", err, f.mints)
 	}
 
-	gone := Run{ID: "r2", Workspace: "acme", Submitter: "u-gone"}
+	gone := Run{ID: "r2", Workspace: "acme", Owner: "u-gone"}
 	if _, err := tk.Get(context.Background(), gone); !errors.Is(err, ErrOwnerNoAccess) {
 		t.Errorf("a submitter without access: %v", err)
 	}
@@ -124,12 +132,35 @@ func TestTokens_RemintAndRefusal(t *testing.T) {
 	if _, err := tk.Get(context.Background(), gone); !errors.Is(err, ErrOwnerNoAccess) || f.mints != n {
 		t.Errorf("a refusal isn't remembered: %v, %d mints", err, f.mints-n)
 	}
-	if _, err := tk.Get(context.Background(), Run{ID: "r3", Workspace: "acme", Submitter: "u-owner"}); !errors.Is(err, ErrRoleExceeded) {
+	if _, err := tk.Get(context.Background(), Run{ID: "r3", Workspace: "acme", Owner: "u-owner"}); !errors.Is(err, ErrRoleExceeded) {
 		t.Errorf("an owner role beyond the ceiling: %v", err)
 	}
-	viewer, _ := tk.Get(context.Background(), Run{ID: "r4", Workspace: "acme", Submitter: "u-viewer"})
+	viewer, _ := tk.Get(context.Background(), Run{ID: "r4", Workspace: "acme", Owner: "u-viewer"})
 	if viewer.Access() != "read" {
 		t.Errorf("a viewer's access = %s", viewer.Access())
+	}
+	if f.lastMint["roleCeiling"] != "editor" || f.lastMint["subject"] != "spark:acme:r4" {
+		t.Errorf("a person's run minted with %v, want ceiling editor", f.lastMint)
+	}
+}
+
+// ADR 0119: a run a pipeline submitted mints with the pipeline's owner, as an opaque id, and its own
+// ceiling; a token above that ceiling is discarded.
+func TestTokens_PipelineOwnerAndCeiling(t *testing.T) {
+	f := newFakeCore(t)
+	tk := newTokens(f)
+	ctx := context.Background()
+	tok, err := tk.Get(ctx, Run{ID: "p1", Workspace: "acme", Owner: "svc:acme:nightly", Ceiling: "editor", Pipeline: true})
+	if err != nil || tok.Role != "editor" || f.lastMint["owner"] != "svc:acme:nightly" || f.lastMint["roleCeiling"] != "editor" {
+		t.Fatalf("service-account owner: %+v %v, mint %v", tok, err, f.lastMint)
+	}
+	tok, err = tk.Get(ctx, Run{ID: "p2", Workspace: "acme", Owner: "u-editor", Ceiling: "viewer", Pipeline: true})
+	if err != nil || tok.Role != "viewer" || tok.Access() != "read" || f.lastMint["roleCeiling"] != "viewer" {
+		t.Fatalf("viewer ceiling: %+v %v, mint %v", tok, err, f.lastMint)
+	}
+	// A core granting more than the ceiling asked for is not trusted.
+	if _, err := tk.Get(ctx, Run{ID: "p3", Workspace: "acme", Owner: "u-owner", Ceiling: "viewer", Pipeline: true}); !errors.Is(err, ErrRoleExceeded) {
+		t.Errorf("a role beyond a viewer ceiling: %v", err)
 	}
 }
 
@@ -182,6 +213,32 @@ func TestPlanner_Prepare(t *testing.T) {
 	vplan, err := p.Prepare(ctx, dataRun("u-viewer", "acme", &runs.DataAccess{Lakehouse: true}))
 	if err != nil || vplan.Warehouse.Access != "read" || vplan.Role != "viewer" {
 		t.Errorf("viewer plan = %+v %v", vplan, err)
+	}
+
+	// ADR 0119: a run a pipeline submitted reads as the pipeline's owner, capped at its ceiling.
+	piped := func(owner, ceiling string, d *runs.DataAccess) runs.Run {
+		r := dataRun("pipeline:9", "acme", d)
+		r.Workload, r.DataOwner, r.DataCeiling = true, owner, ceiling
+		return r
+	}
+	write := &runs.DataAccess{Storage: []runs.StorageLocation{{BackendID: "lake", Path: "x", Access: "readwrite"}}}
+	p.Tokens.Forget("r1")
+	if plan, err := p.Prepare(ctx, piped("u-editor", "editor", write)); err != nil || plan.Role != "editor" || f.lastMint["owner"] != "u-editor" {
+		t.Errorf("pipeline run as its owner: %+v %v, mint %v", plan, err, f.lastMint)
+	}
+	p.Tokens.Forget("r1")
+	if _, err := p.Prepare(ctx, piped("u-editor", "viewer", write)); !errors.Is(err, runs.ErrDataRefused) ||
+		!strings.Contains(err.Error(), "needs an editor") || !strings.Contains(err.Error(), "pipeline that submitted the run holds only a viewer") {
+		t.Errorf("readwrite under a viewer ceiling: %v", err)
+	}
+	p.Tokens.Forget("r1")
+	if plan, err := p.Prepare(ctx, piped("u-editor", "viewer", &runs.DataAccess{Storage: []runs.StorageLocation{{BackendID: "lake", Path: "x", Access: "read"}}})); err != nil || plan.Role != "viewer" {
+		t.Errorf("read under a viewer ceiling: %+v %v", plan, err)
+	}
+	p.Tokens.Forget("r1")
+	if _, err := p.Prepare(ctx, piped("u-gone", "editor", write)); !errors.Is(err, runs.ErrDataRefused) ||
+		!strings.Contains(err.Error(), "the run's owner (u-gone, the owner of the pipeline that submitted it) no longer has access") {
+		t.Errorf("an owner core refuses: %v", err)
 	}
 
 	// Check: a submitter who loses access while the run lives is a refusal (a run's submitter never

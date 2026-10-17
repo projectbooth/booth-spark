@@ -30,9 +30,13 @@ func TestSparkUI(t *testing.T) {
 		"operator":  {Subject: "op-1", Workspace: "acme", Role: identity.RoleViewer, Operator: true},
 		// The submitter acting in another workspace: the run is not theirs to see from there.
 		"submitter-elsewhere": {Subject: "e-1", Workspace: "globex", Role: identity.RoleOwner},
+		// An assertion never names a workload; this one does, to show a pipeline's run is refused
+		// even to a caller whose subject matches (ADR 0119 decision 3).
+		"pipeline": {Subject: "pipeline:7", Workspace: "acme", Role: identity.RoleEditor},
 	}
 	h := NewRouter(Deps{DB: fakeDB{}, Iframe: callers, SubmitMinRole: auth.RoleEditor, Runs: staticRuns{
 		"r-1": {ID: "r-1", Workspace: "acme", Submitter: "e-1", UIURL: drv.URL},
+		"r-3": {ID: "r-3", Workspace: "acme", Submitter: "pipeline:7", Workload: true, UIURL: drv.URL},
 	}})
 
 	cases := []struct {
@@ -47,6 +51,8 @@ func TestSparkUI(t *testing.T) {
 		{"a workspace owner who isn't the submitter", "owner", "GET", "/runs/r-1/ui/jobs/", 403, ""},
 		{"a platform operator", "operator", "GET", "/runs/r-1/ui/jobs/", 403, ""},
 		{"the submitter, from another workspace", "submitter-elsewhere", "GET", "/runs/r-1/ui/jobs/", 404, ""},
+		{"a pipeline's run, to its own subject", "pipeline", "GET", "/runs/r-3/ui/jobs/", 403, ""},
+		{"a pipeline's run, to a workspace owner", "owner", "GET", "/runs/r-3/ui/jobs/", 403, ""},
 		{"an unknown run", "submitter", "GET", "/runs/r-2/ui/jobs/", 404, ""},
 		{"a reserved id", "submitter", "GET", "/runs/proxy/ui/", 404, ""},
 		{"POST (the UI's kill forms)", "submitter", "POST", "/runs/r-1/ui/jobs/job/kill/", 405, ""},

@@ -30,6 +30,8 @@ type Run struct {
 	// Submitter is the `sub` of the person who submitted the run: the only person who may open its
 	// Spark UI (ADR 0110 ruling 4).
 	Submitter string `json:"submitter"`
+	// Workload is true for a run a workload token submitted: nobody opens its Spark UI (ADR 0119).
+	Workload bool `json:"workload,omitempty"`
 	// UIURL is the driver's UI, e.g. http://<driver service>:4040.
 	UIURL string `json:"url"`
 }

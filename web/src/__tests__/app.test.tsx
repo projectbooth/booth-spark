@@ -137,6 +137,34 @@ describe("an application's page", () => {
     expect(calls.some((c) => c.url.includes("/logs"))).toBe(false);
   });
 
+  it("shows a pipeline's run with whom it acts as, and no Spark UI link", async () => {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: { ...editor, role: "owner" } };
+      if (url === "ui/api/applications/r1")
+        return {
+          json: run({
+            submitter: "pipeline:8",
+            submitterName: "pipeline:8",
+            workload: true,
+            uiPath: undefined,
+            dataOwner: "svc:acme:nightly",
+            dataCeiling: "editor",
+            dataAccess: { storage: [{ backendId: "spark", path: "smoke", access: "readwrite" }], role: "editor" },
+          }),
+        };
+      if (url.startsWith("ui/api/applications/r1/logs")) return { text: "weekly" };
+      return { status: 404, json: { error: "not found" } };
+    });
+    window.location.hash = "#/applications/r1";
+    render(<App />);
+    expect(await screen.findByText("pipeline:8 (a workload)")).toBeInTheDocument();
+    expect(screen.getByText("Acting as")).toBeInTheDocument();
+    expect(screen.getByText("svc:acme:nightly")).toBeInTheDocument();
+    expect(screen.getByText(/has no Spark UI in Booth/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open the Spark UI" })).toBeNull();
+    expect(screen.queryByText("The Spark UI opens for this run's submitter only.")).toBeNull();
+  });
+
   it("stops a run for its submitter", async () => {
     serve((m, url) => {
       if (url === "ui/api/me") return { json: editor };

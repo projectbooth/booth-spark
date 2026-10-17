@@ -191,6 +191,13 @@ func sparkUI(runs RunLookup) http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		if run.Workload {
+			// ADR 0119 decision 3. A person's sub never equals a pipeline:<id> submitter anyway;
+			// this says so outright.
+			log.Printf("spark ui: refused run=%s to sub=%s (submitted by a workload)", id, c.Subject)
+			http.Error(w, "a run a pipeline submitted has no Spark UI in Booth; its state and log are on the module's page", http.StatusForbidden)
+			return
+		}
 		if run.Submitter != c.Subject {
 			log.Printf("spark ui: refused run=%s to sub=%s (not its submitter)", id, c.Subject)
 			http.Error(w, "only the person who submitted this run can open its Spark UI", http.StatusForbidden)

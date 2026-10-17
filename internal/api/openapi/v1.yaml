@@ -15,7 +15,7 @@ info:
     Who may do what (docs/design-v0.md item 3): anyone in the workspace sees its runs; submitting
     needs `submit.minRole` (editor by default, owner allowed; never viewer); stopping a run or
     reading its logs needs its submitter, a workspace owner or a platform operator. A run's Spark UI
-    opens in the shell for its submitter only (`uiPath`).
+    opens in the shell for its submitter only (`uiPath`), and never for a run a workload submitted.
 
     Sessions are their submitter's and their workspace owners': nobody else sees them, and only the
     submitter runs statements in one. A session with nothing waiting or running and no new
@@ -25,9 +25,13 @@ info:
     booth-database schema, its booth-lakehouse warehouse (the Iceberg catalog `lakehouse`) and up to
     4 booth-storage locations, as its submitter, capped at editor; and an application may start from
     a Python file or a JAR in booth-storage. Each path answers 422 on an install that doesn't offer
-    it (the chart's dataAccess). A run submitted with a workload token gets no data access in this
-    version (422, ADR 0110 ruling 5). A run whose submitter loses access fails, and its namespace
-    is deleted.
+    it (the chart's dataAccess). A run submitted with a workload token gets data access only when the
+    token's subject is a pipeline's (`pipeline:<id>`) and it carries booth-core's signed
+    `booth_owner` claim (ADR 0119): the run then reads and writes as that owner (`dataOwner`), capped
+    at the lesser of editor and the token's role (`dataCeiling`), fixed at submit. Any other
+    workload token gets 422 (ADR 0110 ruling 5), and so does every workload token for a session.
+    The request never names an owner. A run whose submitter, or owner, loses access fails, and its
+    namespace is deleted.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -574,7 +578,14 @@ components:
             maxDuration: {type: string}
         uiPath:
           type: string
-          description: While running, where the run's Spark UI opens in the shell (its submitter only)
+          description: "While running, where the run's Spark UI opens in the shell (its submitter only; never for a run a workload submitted)"
+        dataOwner:
+          type: string
+          description: "For a run a pipeline submitted (ADR 0119): whom it reads and writes data as, the pipeline's owner from the token's signed booth_owner claim (a person's subject or svc:<workspace>:<name>). Absent for a person's run, which reads as its submitter"
+        dataCeiling:
+          type: string
+          enum: [editor, viewer]
+          description: "For a run a pipeline submitted: its token's role ceiling, the lesser of editor and the submitting token's role, fixed at submit"
         dataAccess: {$ref: "#/components/schemas/DataView"}
         main:
           type: object

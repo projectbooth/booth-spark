@@ -47,7 +47,7 @@ The values an operator usually sets:
 | Value | Default | What it does |
 |---|---|---|
 | `oidc.issuerUrl`, `oidc.clientId` | empty | `/v1` verifies tokens against them; empty, `/v1` answers 503 (the UI still works) |
-| `oidc.workloadIssuerUrl` | empty | also accept booth-core's workload tokens on `/v1` (a pipeline task); their runs get no data access |
+| `oidc.workloadIssuerUrl` | empty | also accept booth-core's workload tokens on `/v1` (a pipeline task); a pipeline's runs get data access as its owner (ADR 0119, below), other workloads' none |
 | `submit.minRole` | `editor` | the lowest role that may submit or start a session: `editor` or `owner`; viewers never |
 | `runs.maxRunning`, `runs.maxRunningPerWorkspace` | 2, 1 | live runs at once, install-wide and per workspace |
 | `runs.memoryBudget` | 4Gi | the memory all live runs may use together, each at its largest |
@@ -130,7 +130,8 @@ A run's code runs as its submitter, in its own namespace, with:
   allowlisted images, the run's workspace label, the configured placement, the executor account
   with no token;
 - with data access, a workload token naming the run (`spark:<workspace>:<run>`), its submitter's
-  role in the workspace capped at editor, and the credential sidecars' leases.
+  role in the workspace capped at editor (for a run a pipeline submitted, its pipeline owner's,
+  below), and the credential sidecars' leases.
 
 It can't reach another run, another namespace's pods, booth-core, the node or the LAN; it can't
 read Secrets, not even in its own namespace; it can't create a pod as its driver's account, or with
@@ -243,8 +244,37 @@ Known limits, stated plainly:
   `errorifexists` mode to a path deleted less than 2 minutes earlier can therefore fail; overwrite
   and append are unaffected, and Spark ignores the empty `_temporary` a commit leaves behind.
   Integration's `s3a` job (`test/s3a`) checks S3A against SeaweedFS and accepts exactly this state.
-- **Runs submitted with a workload token** (a pipeline task) get no data access in this version
-  (ADR 0110 ruling 5).
+- **A run a pipeline submitted acts as the pipeline's owner, who may not have written its code**
+  (next section).
+
+### Runs a pipeline submits (ADR 0119)
+
+A pipeline task submits with its workload token. Its run gets data access, or starts from a file in
+booth-storage, only when the token's subject is a pipeline's (`pipeline:<id>`) and the token carries
+booth-core's signed `booth_owner` claim. The run then reads and writes **as the pipeline's owner**:
+the person who owns the pipeline, or a service account (`svc:<workspace>:<name>`, ADR 0120).
+Stated plainly:
+
+- **The owner may not have written the task's code.** Whatever a pipeline's code asks for, it gets
+  with its owner's access, capped at editor. This is already true of every pipeline task, and the run
+  is capped by the same token, so nothing is widened.
+- **Nobody else's token gets this.** Any other workload token (another module's, or a run's own
+  `spark:` token, which its code can read) asking for data gets 422, as does a pipeline token
+  without the claim, and every workload token for a session. A request naming an owner is refused
+  (400): the owner comes from the token only.
+- **The ceiling is fixed at submit**: the lesser of editor and the pipeline token's role. Lowering
+  the pipeline's role ceiling while a run lives (up to `runs.maxDuration`) doesn't change that run;
+  booth-core still re-checks the owner at every re-mint, and a refused re-mint ends the run.
+- **A person owner who hasn't signed in** within booth-core's owner window (7 days by default)
+  can't start a run, and ends a live one at its next re-mint. A service account has no window; a
+  disabled one is refused the same way.
+- **No Spark UI.** It is code-controlled content, opened only by the person who submitted the run;
+  a pipeline's run has no such person. Its state, reason and log are on the module's page and `/v1`.
+- **Who may stop it or read its log** is as for any run: its submitter (the pipeline's own token),
+  workspace owners and platform operators. Being named as its owner gives no extra rights; the
+  pipeline's own run view is where its owner follows it.
+- On the module's page and `/v1` it shows as submitted by `pipeline:<id>` (a workload), acting as
+  its owner's id as it is (`dataOwner`), with its ceiling (`dataCeiling`).
 
 ## Uninstall and upgrade
 
@@ -276,8 +306,12 @@ A run's `reason` (in the UI and on `/v1`) says why, in the words of whatever ref
 - **`could not start: no data access: ...`**: the run asked for something its submitter can't have:
   a backend that isn't theirs, `readwrite` as a viewer, a workspace with no lakehouse warehouse, two
   storage locations in one bucket. The broker's or booth-lakehouse's own reason follows.
-- **`lost its data access: ...`**: the submitter lost their role, or their editor role, while the run
-  lived, or hasn't signed in for 7 days. The run ended and its namespace went.
+- **`lost its data access: ...`**: the submitter (for a pipeline's run, its owner) lost their role, or
+  their editor role, while the run lived, or hasn't signed in within booth-core's owner window (7
+  days by default), or is a disabled service account. The run ended and its namespace went.
+- **`422` on submission, `... only when a pipeline submits it`** / **`... names its owner
+  (booth_owner ...)`**: a workload token asked for data access, or a file in booth-storage, without
+  being a pipeline's token carrying booth-core's owner claim (above).
 - **`could not start: a credential sidecar ... got no lease in time`**: the broker or the data module
   didn't answer within 5 minutes; see booth-core's and the data module's logs.
 - **`booth-core refused to mint for booth-spark`**: the manifest's `workloadIdentity` or the

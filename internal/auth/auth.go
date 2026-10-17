@@ -55,9 +55,16 @@ type Claims struct {
 	// DisplayName is preferred_username, else email, else the subject.
 	DisplayName string
 	// Workload is true for a token from booth-core's workload issuer: an unattended run, never a
-	// person (ADR 0056). A run it submits gets no data access in v0 (ADR 0110 ruling 5).
+	// person (ADR 0056). A run it submits gets data access only as ADR 0119 allows.
 	Workload bool
+	// Owner is a workload token's signed booth_owner claim (ADR 0119): the id of the person or
+	// service account (ADR 0120, svc:<workspace>:<name>) core checked when it minted the token.
+	// Opaque here, and never the caller's identity. Empty for human tokens, whatever they carry.
+	Owner string
 }
+
+// OwnerClaim is the workload-token claim naming the minting owner (ADR 0119).
+const OwnerClaim = "booth_owner"
 
 // TokenVerifier verifies a raw bearer token. *Verifier and *Lazy are the production
 // implementations; the interface exists so the HTTP layer can be tested without a live provider.
@@ -206,6 +213,11 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error)
 		// Core enforces `<kind>:<id>` when minting (ADR 0058); anything else is not a token it made.
 		return nil, fmt.Errorf("token verification failed: workload token subject %q is not <kind>:<id>", idToken.Subject)
 	}
+	var owner string
+	if workload {
+		// Read only off core's own tokens: a human token carrying the claim names nobody.
+		_ = json.Unmarshal(raw[OwnerClaim], &owner)
+	}
 	display := idToken.Subject
 	for _, name := range []string{"preferred_username", "email"} {
 		var s string
@@ -214,7 +226,7 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error)
 			break
 		}
 	}
-	return &Claims{Subject: idToken.Subject, Groups: groups, DisplayName: display, Workload: workload}, nil
+	return &Claims{Subject: idToken.Subject, Groups: groups, DisplayName: display, Workload: workload, Owner: owner}, nil
 }
 
 // workloadSubject is ADR 0058's `<kind>:<id>` shape, which no person's `sub` ever has.
@@ -333,6 +345,18 @@ type Identity struct {
 	Operator bool
 	// Workload is true for booth-core's workload tokens (an unattended run, ADR 0056).
 	Workload bool
+	// Owner is a workload token's booth_owner claim (Claims.Owner); empty otherwise.
+	Owner string
+}
+
+// WorkloadKind is the kind of a workload subject, `<kind>:<id>` (ADR 0058): "pipeline" for
+// pipeline:<id>. Empty for anything else.
+func WorkloadKind(subject string) string {
+	if !workloadSubject.MatchString(subject) {
+		return ""
+	}
+	kind, _, _ := strings.Cut(subject, ":")
+	return kind
 }
 
 type contextKey struct{}
@@ -386,7 +410,7 @@ func Middleware(verifier TokenVerifier) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), Identity{
 				Subject: claims.Subject, DisplayName: claims.DisplayName, Workspace: workspace,
 				Role: EffectiveRole(forwarded, granted), Operator: !claims.Workload && IsOperator(claims.Groups),
-				Workload: claims.Workload,
+				Workload: claims.Workload, Owner: claims.Owner,
 			})))
 		})
 	}

@@ -48,7 +48,8 @@ type runView struct {
 		MaxExecutors   int    `json:"maxExecutors"`
 		MaxDuration    string `json:"maxDuration"`
 	} `json:"resources"`
-	// UIPath is where the run's Spark UI opens in the shell while it runs (its submitter only).
+	// UIPath is where the run's Spark UI opens in the shell while it runs (its submitter only;
+	// never for a run a workload submitted).
 	UIPath string `json:"uiPath,omitempty"`
 	// DataAccess is what the run asked for and, once it launched, what it got.
 	DataAccess *dataView `json:"dataAccess,omitempty"`
@@ -105,7 +106,9 @@ func view(r runs.Run) runView {
 	v.Resources.MinExecutors = r.Spec.MinExecutors
 	v.Resources.MaxExecutors = r.Spec.MaxExecutors
 	v.Resources.MaxDuration = r.Spec.Duration.String()
-	if r.State == runs.Running {
+	// A run a workload submitted has no Spark UI link: it has no person submitter to be its author
+	// (ADR 0119 decision 3).
+	if r.State == runs.Running && !r.Workload {
 		v.UIPath = uiproxy.BasePath(r.ID) + "/"
 	}
 	return v
@@ -147,11 +150,16 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 			apiError(w, http.StatusBadRequest, "invalid", "body: "+err.Error())
 			return
 		}
+		var dataOwner, dataCeiling string
 		if id.Workload && (spec.DataAccess.Any() || spec.Main.Python != nil || spec.Main.Jar != nil) {
-			// ADR 0110 ruling 5: a workload token names no person to read data as, and an entry
-			// point in booth-storage is read as the submitter too.
-			apiError(w, http.StatusUnprocessableEntity, "unavailable", "a run submitted with a workload token has no data access in this version (ADR 0110)")
-			return
+			// An entry point in booth-storage is read with the run's token too, so it counts as
+			// data access.
+			owner, why := workloadDataOwner(id)
+			if why != "" {
+				apiError(w, http.StatusUnprocessableEntity, "unavailable", why)
+				return
+			}
+			dataOwner, dataCeiling = owner, dataRoleCeiling(id.Role)
 		}
 		v, err := runs.Validate(spec, a.Limits)
 		var verr runs.ValidationError
@@ -172,7 +180,7 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 		run, err := a.Store.Create(r.Context(), runs.Run{
 			ID: runID, Kind: "application", Workspace: id.Workspace, Submitter: id.Subject, SubmitterName: id.DisplayName,
 			Workload: id.Workload, Name: spec.Name, Namespace: runs.NamespacePrefix + runID, FootprintMi: v.FootprintMi(), Spec: v,
-			DataBearer: dataBearer(v),
+			DataBearer: dataBearer(v), DataOwner: dataOwner, DataCeiling: dataCeiling,
 		}, key, a.Admission)
 		var capErr runs.ErrAtCapacity
 		switch {
@@ -187,9 +195,41 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 			apiError(w, http.StatusInternalServerError, "internal", "could not record the run")
 			return
 		}
-		log.Printf("api: run %s submitted by sub=%s workspace=%s workload=%v footprint=%dMi", run.ID, id.Subject, id.Workspace, id.Workload, run.FootprintMi)
+		if run.DataOwner != "" {
+			log.Printf("api: run %s submitted by sub=%s workspace=%s workload=true footprint=%dMi, data as owner=%s ceiling=%s",
+				run.ID, id.Subject, id.Workspace, run.FootprintMi, run.DataOwner, run.DataCeiling)
+		} else {
+			log.Printf("api: run %s submitted by sub=%s workspace=%s workload=%v footprint=%dMi", run.ID, id.Subject, id.Workspace, id.Workload, run.FootprintMi)
+		}
 		writeJSON(w, http.StatusCreated, view(run))
 	}
+}
+
+// workloadDataOwner is ADR 0119's rule for a run with data access submitted with a workload token
+// (amendment 2, ruling 1): the token is booth-core's workload issuer's (id.Workload), its subject
+// is a pipeline's, pipeline:<id>, and it carries core's signed booth_owner claim. The run then
+// reads and writes as that owner, an opaque id core resolves at every mint (a person's sub or a
+// service account, ADR 0120). Never an owner from the request: the body has no such field, and an
+// unknown field is refused. Any other workload token keeps ADR 0110 ruling 5: no data access. The
+// subject check matters: a run's own spark:<ws>:<run> token, which its code can read, must not
+// submit another run with data access.
+func workloadDataOwner(id auth.Identity) (owner, why string) {
+	switch {
+	case auth.WorkloadKind(id.Subject) != "pipeline":
+		return "", "a run submitted with a workload token gets data access only when a pipeline submits it (ADR 0119); this token's subject is " + id.Subject
+	case id.Owner == "":
+		return "", "a run submitted with a pipeline's workload token gets data access only when the token names its owner (booth_owner, signed by booth-core; ADR 0119), and this one doesn't"
+	}
+	return id.Owner, ""
+}
+
+// dataRoleCeiling caps a pipeline-submitted run's token at the lesser of editor and the submitting
+// token's role, fixed at submit (ADR 0119 decision 2; amendment 2, ruling 4).
+func dataRoleCeiling(role auth.Role) string {
+	if auth.Rank(role) < auth.Rank(auth.RoleEditor) {
+		return string(auth.RoleViewer)
+	}
+	return string(auth.RoleEditor)
 }
 
 func (a Applications) list(w http.ResponseWriter, r *http.Request) {
@@ -331,7 +371,7 @@ func (s StoreRuns) Lookup(ctx context.Context, id string) (uiproxy.Run, bool) {
 		return uiproxy.Run{}, false
 	}
 	return uiproxy.Run{
-		ID: run.ID, Workspace: run.Workspace, Submitter: run.Submitter,
+		ID: run.ID, Workspace: run.Workspace, Submitter: run.Submitter, Workload: run.Workload,
 		UIURL: "http://" + runs.DriverService + "." + run.Namespace + ".svc:" + strconv.Itoa(runs.UIPort),
 	}, true
 }

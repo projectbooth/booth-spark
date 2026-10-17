@@ -70,6 +70,13 @@ var people = fixedTokens{
 	"operator": {Subject: "op-1", Groups: []string{"/workspaces/acme/viewer", "/platform/operator"}},
 	"globex":   {Subject: "g-1", Groups: []string{"/workspaces/globex/owner"}},
 	"run":      {Subject: "pipeline:7", Groups: []string{"/workspaces/acme/editor"}, Workload: true},
+	// ADR 0119: workload tokens carrying core's signed booth_owner claim (auth.Verifier reads it
+	// off core's tokens only).
+	"pipeline":        {Subject: "pipeline:8", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
+	"pipeline-svc":    {Subject: "pipeline:9", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "svc:acme:nightly"},
+	"pipeline-viewer": {Subject: "pipeline:10", Groups: []string{"/workspaces/acme/viewer"}, Workload: true, Owner: "u-alice"},
+	"spark-run":       {Subject: "spark:acme:r1", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
+	"streamlit-app":   {Subject: "streamlit:acme:a1", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
 }
 
 func appsRouter(t *testing.T, s *runs.Store, minRole auth.Role, adm runs.Admission) http.Handler {

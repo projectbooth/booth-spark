@@ -34,8 +34,10 @@ oidc:
   # /v1 too. It must equal booth-core's BOOTH_WORKLOAD_ISSUER_URL EXACTLY (compared character for
   # character with a token's `iss`): core's chart defaults it to its in-cluster Service,
   # http://booth-core.booth-system.svc.cluster.local:8080 for release "booth-core" in namespace
-  # "booth-system" (not the shorter "...svc:8080"). A run submitted with a workload token gets no
-  # data access in v0 (ADR 0110 ruling 5). Empty: people only. Requires issuerUrl.
+  # "booth-system" (not the shorter "...svc:8080"). A run submitted with a workload token gets data
+  # access only when a pipeline submits it with core's signed owner claim, and then as the
+  # pipeline's owner (ADR 0119); any other workload's run gets none. Empty: people only. Requires
+  # issuerUrl.
   workloadIssuerUrl: ""
 
 identity:
