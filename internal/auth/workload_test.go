@@ -246,6 +246,26 @@ func TestVerifier_OwnerClaim(t *testing.T) {
 			}
 		})
 	}
+
+	// booth_module (ADR 0058), the trust root of ADR 0119's rule, on the same terms.
+	module := func(m any) map[string]any { return map[string]any{auth.ModuleClaim: m, auth.OwnerClaim: "u-alice"} }
+	for name, c := range map[string]struct {
+		token string
+		want  string
+	}{
+		"workload token from the pipeline module": {core.Mint(t, authtest.Token{Subject: "pipeline:acme:r1", Audience: "booth-spark", Extra: module("pipeline")}), "pipeline"},
+		"workload token from another module":      {core.Mint(t, authtest.Token{Subject: "pipeline:acme:r1", Audience: "booth-spark", Extra: module("streamlit")}), "streamlit"},
+		"workload token with a non-string claim":  {core.Mint(t, authtest.Token{Subject: "pipeline:acme:r1", Audience: "booth-spark", Extra: module(true)}), ""},
+		"human token carrying the claim":          {idp.Mint(t, authtest.Token{Subject: "mallory", Audience: "booth-spark", Extra: module("pipeline")}), ""},
+	} {
+		claims, err := v.Verify(ctx, c.token)
+		if err != nil {
+			t.Fatalf("%s: Verify: %v", name, err)
+		}
+		if claims.Module != c.want {
+			t.Errorf("%s: Module = %q, want %q", name, claims.Module, c.want)
+		}
+	}
 }
 
 func TestWorkloadKind(t *testing.T) {

@@ -858,16 +858,20 @@ Open questions, for the coordinator (in the PR too):
 
 ## As built: ADR 0119 (runs a pipeline submits), 2026-10-16
 
-ADR 0119 with its amendment 2 rulings; booth-spark's design note was accepted as written. Unit-tested
+ADR 0119 with its amendment 2 and 3 rulings; booth-spark's design note was accepted as written. Unit-tested
 against a fake verifier and minter; the real-core tests follow once booth-core ships the claim.
 
-- **The claim** (`internal/auth`): `booth_owner` is read off a verified token from core's workload
-  issuer only, into the caller's identity. A human token carrying it names nobody; a claim that
-  isn't a string is no owner.
-- **The rule** (`internal/api/applications.go`, `workloadDataOwner`): a workload token's run may ask
-  for data access, or start from a file in booth-storage, only when its subject's kind is exactly
-  `pipeline` and it carries the claim. Any other kind (a run's own `spark:` token, which its code
-  can read; another module's) and a pipeline token without the claim get 422 with the reason. The
+- **The claims** (`internal/auth`): `booth_module` (ADR 0058) and `booth_owner` are read off a
+  verified token from core's workload issuer only, into the caller's identity. A human token
+  carrying them names nobody; a claim that isn't a string is no claim.
+- **The rule** (`internal/api/applications.go`, `workloadDataOwner`; amendment 3, ruling 1): a
+  workload token's run may ask for data access, or start from a file in booth-storage, only when
+  `booth_module` names the pipeline module (`pipeline`) and the token carries `booth_owner`. The
+  trust is the module claim, which core binds to the minting credential; the subject's kind
+  (`pipeline:<ws>:<runId>`) is a second guard, since any minting module chooses its own subjects.
+  Another module's token (even with a pipeline-shaped subject), a run's own `spark:` token, a token
+  naming no module, a pipeline token under another subject kind, and one without the owner claim
+  get 422 with the reason. The
   body has no owner field and is decoded strictly, so an owner in it is 400. Sessions are outside
   the ADR: a workload token's session still gets no data access.
 - **The record** (migration 0005): `data_owner` and `data_ceiling`, both empty for a person's run
@@ -885,6 +889,11 @@ against a fake verifier and minter; the real-core tests follow once booth-core s
 - **A pipeline holding only a viewer's role can't submit at all** (`submit.minRole` is editor or
   owner), so its viewer ceiling is never reached from `/v1` today; the rule and the mint still cap
   at it, and the planner's "readwrite needs an editor" refusal covers a viewer-capped token.
+- **Same subject, same run** (amendment 3, ruling 7): getting, stopping and reading the log of a run
+  compare the caller's subject with the submission's, so every task token of one pipeline run
+  (`pipeline:<ws>:<runId>`) qualifies and another pipeline run's doesn't; `Idempotency-Key` is
+  scoped to the workspace and that subject. Tested. (Getting is open to the whole workspace, as for
+  every run.)
 - **Not yet tested against real core**: an owner core refuses (not seen within its window, or a
   disabled service account) failing the run at its first mint, and a pipeline's run reading and
   writing through Storage and the Lakekeeper warehouse. Integration will use a stand-in module that

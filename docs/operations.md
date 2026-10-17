@@ -250,17 +250,19 @@ Known limits, stated plainly:
 ### Runs a pipeline submits (ADR 0119)
 
 A pipeline task submits with its workload token. Its run gets data access, or starts from a file in
-booth-storage, only when the token's subject is a pipeline's (`pipeline:<id>`) and the token carries
-booth-core's signed `booth_owner` claim. The run then reads and writes **as the pipeline's owner**:
+booth-storage, only when booth-core's signed `booth_module` claim names the pipeline module
+(`pipeline`) and the token carries core's signed `booth_owner` claim. Core binds `booth_module` to
+the credential that minted the token, so it says which module asked; a subject can be chosen by any
+minting module, so the subject's kind (`pipeline:<workspace>:<run>`) is only a second check. The run then reads and writes **as the pipeline's owner**:
 the person who owns the pipeline, or a service account (`svc:<workspace>:<name>`, ADR 0120).
 Stated plainly:
 
 - **The owner may not have written the task's code.** Whatever a pipeline's code asks for, it gets
   with its owner's access, capped at editor. This is already true of every pipeline task, and the run
   is capped by the same token, so nothing is widened.
-- **Nobody else's token gets this.** Any other workload token (another module's, or a run's own
-  `spark:` token, which its code can read) asking for data gets 422, as does a pipeline token
-  without the claim, and every workload token for a session. A request naming an owner is refused
+- **Nobody else's token gets this.** A token minted for any other module (even with a
+  pipeline-shaped subject), a run's own `spark:` token (which its code can read), a pipeline token
+  without the owner claim, and every workload token for a session get 422 when they ask for data. A request naming an owner is refused
   (400): the owner comes from the token only.
 - **The ceiling is fixed at submit**: the lesser of editor and the pipeline token's role. Lowering
   the pipeline's role ceiling while a run lives (up to `runs.maxDuration`) doesn't change that run;
@@ -270,8 +272,9 @@ Stated plainly:
   disabled one is refused the same way.
 - **No Spark UI.** It is code-controlled content, opened only by the person who submitted the run;
   a pipeline's run has no such person. Its state, reason and log are on the module's page and `/v1`.
-- **Who may stop it or read its log** is as for any run: its submitter (the pipeline's own token),
-  workspace owners and platform operators. Being named as its owner gives no extra rights; the
+- **Who may stop it or read its log** is as for any run: its submitter, meaning any token with the
+  same subject as the one that submitted it (each task of the pipeline run), workspace owners and
+  platform operators. `Idempotency-Key` is scoped to that subject too. Being named as its owner gives no extra rights; the
   pipeline's own run view is where its owner follows it.
 - On the module's page and `/v1` it shows as submitted by `pipeline:<id>` (a workload), acting as
   its owner's id as it is (`dataOwner`), with its ceiling (`dataCeiling`).
@@ -309,9 +312,10 @@ A run's `reason` (in the UI and on `/v1`) says why, in the words of whatever ref
 - **`lost its data access: ...`**: the submitter (for a pipeline's run, its owner) lost their role, or
   their editor role, while the run lived, or hasn't signed in within booth-core's owner window (7
   days by default), or is a disabled service account. The run ended and its namespace went.
-- **`422` on submission, `... only when a pipeline submits it`** / **`... names its owner
-  (booth_owner ...)`**: a workload token asked for data access, or a file in booth-storage, without
-  being a pipeline's token carrying booth-core's owner claim (above).
+- **`422` on submission, `... only when the pipeline module submits it`** / **`... under a pipeline
+  run's subject`** / **`... names its owner (booth_owner ...)`**: a workload token asked for data
+  access, or a file in booth-storage, without being the pipeline module's token carrying booth-core's
+  owner claim (above).
 - **`could not start: a credential sidecar ... got no lease in time`**: the broker or the data module
   didn't answer within 5 minutes; see booth-core's and the data module's logs.
 - **`booth-core refused to mint for booth-spark`**: the manifest's `workloadIdentity` or the

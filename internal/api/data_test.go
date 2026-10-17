@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -79,8 +80,9 @@ func TestData_Submit(t *testing.T) {
 	}
 }
 
-// ADR 0119 (amendment 2): a run a pipeline submits reads and writes as the pipeline's owner, named
-// only by core's signed booth_owner claim.
+// ADR 0119 (amendments 2 and 3): a run the pipeline module submits reads and writes as the
+// pipeline's owner. Trust rests on core's signed booth_module claim plus booth_owner; the subject
+// kind is a second guard only.
 func TestData_PipelineSubmit(t *testing.T) {
 	s := testStore(t)
 	h := dataRouter(t, s)
@@ -113,27 +115,34 @@ func TestData_PipelineSubmit(t *testing.T) {
 		t.Fatalf("a refused submission was recorded: %+v", list)
 	}
 
-	// 2. A pipeline token without the claim: no data access, and no entry point from booth-storage;
-	// without data it runs as before.
+	// 2. A pipeline token without the owner claim: no data access, and no entry point from
+	// booth-storage; without data it runs as before.
 	for name, body := range map[string]string{
 		"storage":               `{"name":"x","main":{"inlinePython":"1"},` + write + `}`,
 		"a storage entry point": `{"name":"x","main":{"python":{"backendId":"spark","path":"a.py"}}}`,
 	} {
-		rec := call(h, "run", "acme", "POST", "/v1/applications", body)
+		rec := call(h, "pipeline-no-owner", "acme", "POST", "/v1/applications", body)
 		if rec.Code != 422 || !strings.Contains(rec.Body.String(), "booth_owner") {
-			t.Errorf("no claim, %s: %d %s", name, rec.Code, rec.Body)
+			t.Errorf("no owner claim, %s: %d %s", name, rec.Code, rec.Body)
 		}
 	}
-	if rec := call(h, "run", "acme", "POST", "/v1/applications", `{"name":"pi","main":{"inlinePython":"1"}}`); rec.Code != 201 {
-		t.Errorf("no claim, no data: %d %s", rec.Code, rec.Body)
+	if rec := call(h, "pipeline-no-owner", "acme", "POST", "/v1/applications", `{"name":"pi","main":{"inlinePython":"1"}}`); rec.Code != 201 {
+		t.Errorf("no owner claim, no data: %d %s", rec.Code, rec.Body)
 	}
 
-	// The subject kind is part of the rule (amendment 2, ruling 1): a run's own token, or another
-	// module's, carrying a claim gets nothing.
-	for _, who := range []string{"spark-run", "streamlit-app"} {
+	// Trust is the minting module (amendment 3, ruling 1): a token from another minting module gets
+	// 422 even with a pipeline-shaped subject and an owner claim, as does a run's own spark token
+	// and a token naming no module. The subject kind is the second guard.
+	for who, want := range map[string]string{
+		"streamlit-as-pipeline": "minted for module streamlit",
+		"spark-run":             "minted for module spark",
+		"no-module":             "minted for no named module",
+		"run":                   "minted for no named module",
+		"pipeline-old-sub":      "this token's subject is run:p12",
+	} {
 		rec := call(h, who, "acme", "POST", "/v1/applications", `{"name":"x","main":{"inlinePython":"1"},`+write+`}`)
-		if rec.Code != 422 || !strings.Contains(rec.Body.String(), "only when a pipeline submits it") {
-			t.Errorf("%s with a claim: %d %s", who, rec.Code, rec.Body)
+		if rec.Code != 422 || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: %d %s, want 422 mentioning %q", who, rec.Code, rec.Body, want)
 		}
 	}
 
@@ -156,7 +165,7 @@ func TestData_PipelineSubmit(t *testing.T) {
 		t.Fatalf("pipeline with a claim: %d %s", rec.Code, rec.Body)
 	}
 	got := recorded(t, rec.Body.Bytes())
-	if got.Submitter != "pipeline:8" || !got.Workload || got.DataOwner != "u-alice" || got.DataCeiling != "editor" ||
+	if got.Submitter != "pipeline:acme:p8" || !got.Workload || got.DataOwner != "u-alice" || got.DataCeiling != "editor" ||
 		got.DataOwnerID() != "u-alice" || len(got.DataBearer) != 64 {
 		t.Errorf("recorded %+v", got)
 	}
@@ -171,6 +180,21 @@ func TestData_PipelineSubmit(t *testing.T) {
 	}
 	if _, ok := v["uiPath"]; ok {
 		t.Errorf("a pipeline's running run has a Spark UI link: %s", g.Body)
+	}
+
+	// Another token with the same subject (the pipeline run's next task) reads, follows and stops
+	// it (amendment 3, ruling 7); a different pipeline run's token, in the same workspace, doesn't.
+	if g := call(h, "pipeline-task2", "acme", "GET", "/v1/applications/"+got.ID+"/logs", ""); g.Code != 200 {
+		t.Errorf("logs, same subject: %d %s", g.Code, g.Body)
+	}
+	if g := call(h, "pipeline-svc", "acme", "GET", "/v1/applications/"+got.ID+"/logs", ""); g.Code != 403 {
+		t.Errorf("logs, another pipeline run: %d %s", g.Code, g.Body)
+	}
+	if g := call(h, "pipeline-svc", "acme", "POST", "/v1/applications/"+got.ID+"/stop", ""); g.Code != 403 {
+		t.Errorf("stop, another pipeline run: %d %s", g.Code, g.Body)
+	}
+	if g := call(h, "pipeline-task2", "acme", "POST", "/v1/applications/"+got.ID+"/stop", ""); g.Code != 202 && g.Code != 200 {
+		t.Errorf("stop, same subject: %d %s", g.Code, g.Body)
 	}
 
 	// A service-account owner is opaque, and an entry point in booth-storage is allowed.
@@ -193,6 +217,27 @@ func TestData_PipelineSubmit(t *testing.T) {
 	}
 	if g := call(h, "editor", "acme", "GET", "/v1/applications/"+mine.ID, ""); !strings.Contains(g.Body.String(), `"uiPath"`) || strings.Contains(g.Body.String(), "dataOwner") {
 		t.Errorf("a person's running run: %s", g.Body)
+	}
+
+	// Idempotency-Key is scoped to the subject: the same pipeline run's next token gets the first run
+	// back (200); another pipeline run with the same key gets its own.
+	idem := func(who string) (int, string) {
+		req := httptest.NewRequest("POST", "/v1/applications", strings.NewReader(`{"name":"idem","main":{"inlinePython":"1"},`+write+`}`))
+		req.Header.Set("Authorization", "Bearer "+who)
+		req.Header.Set(auth.HeaderBoothWorkspace, "acme")
+		req.Header.Set("Idempotency-Key", "pipeline-run-p8-task-spark")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var v map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &v)
+		id, _ := v["id"].(string)
+		return rec.Code, id
+	}
+	c1, first := idem("pipeline")
+	c2, again := idem("pipeline-task2")
+	c3, other := idem("pipeline-svc")
+	if c1 != 201 || c2 != 200 || again != first || c3 != 201 || other == first {
+		t.Errorf("idempotency: %d %s, same subject %d %s, other subject %d %s", c1, first, c2, again, c3, other)
 	}
 
 	// Sessions are outside ADR 0119: a pipeline's session gets no data access, claim or not.

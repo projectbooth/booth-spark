@@ -61,10 +61,17 @@ type Claims struct {
 	// service account (ADR 0120, svc:<workspace>:<name>) core checked when it minted the token.
 	// Opaque here, and never the caller's identity. Empty for human tokens, whatever they carry.
 	Owner string
+	// Module is a workload token's signed booth_module claim (ADR 0058): the module whose minting
+	// credential core minted it for. Core sets it on every mint and binds it to that credential,
+	// which a subject prefix is not. Empty for human tokens, whatever they carry.
+	Module string
 }
 
 // OwnerClaim is the workload-token claim naming the minting owner (ADR 0119).
 const OwnerClaim = "booth_owner"
+
+// ModuleClaim is the workload-token claim naming the module core minted it for (ADR 0058).
+const ModuleClaim = "booth_module"
 
 // TokenVerifier verifies a raw bearer token. *Verifier and *Lazy are the production
 // implementations; the interface exists so the HTTP layer can be tested without a live provider.
@@ -213,10 +220,12 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error)
 		// Core enforces `<kind>:<id>` when minting (ADR 0058); anything else is not a token it made.
 		return nil, fmt.Errorf("token verification failed: workload token subject %q is not <kind>:<id>", idToken.Subject)
 	}
-	var owner string
+	var owner, module string
 	if workload {
-		// Read only off core's own tokens: a human token carrying the claim names nobody.
+		// Read only off core's own tokens: a human token carrying either claim names nobody. A
+		// claim that isn't a string is no claim (fail closed).
 		_ = json.Unmarshal(raw[OwnerClaim], &owner)
+		_ = json.Unmarshal(raw[ModuleClaim], &module)
 	}
 	display := idToken.Subject
 	for _, name := range []string{"preferred_username", "email"} {
@@ -226,7 +235,7 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error)
 			break
 		}
 	}
-	return &Claims{Subject: idToken.Subject, Groups: groups, DisplayName: display, Workload: workload, Owner: owner}, nil
+	return &Claims{Subject: idToken.Subject, Groups: groups, DisplayName: display, Workload: workload, Owner: owner, Module: module}, nil
 }
 
 // workloadSubject is ADR 0058's `<kind>:<id>` shape, which no person's `sub` ever has.
@@ -347,6 +356,8 @@ type Identity struct {
 	Workload bool
 	// Owner is a workload token's booth_owner claim (Claims.Owner); empty otherwise.
 	Owner string
+	// Module is a workload token's booth_module claim (Claims.Module); empty otherwise.
+	Module string
 }
 
 // WorkloadKind is the kind of a workload subject, `<kind>:<id>` (ADR 0058): "pipeline" for
@@ -410,7 +421,7 @@ func Middleware(verifier TokenVerifier) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), Identity{
 				Subject: claims.Subject, DisplayName: claims.DisplayName, Workspace: workspace,
 				Role: EffectiveRole(forwarded, granted), Operator: !claims.Workload && IsOperator(claims.Groups),
-				Workload: claims.Workload, Owner: claims.Owner,
+				Workload: claims.Workload, Owner: claims.Owner, Module: claims.Module,
 			})))
 		})
 	}

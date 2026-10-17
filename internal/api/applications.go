@@ -205,22 +205,36 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 	}
 }
 
+// PipelineModule is booth-pipeline's module id, as core names it in booth_module (its BoothModule's
+// spec.id).
+const PipelineModule = "pipeline"
+
 // workloadDataOwner is ADR 0119's rule for a run with data access submitted with a workload token
-// (amendment 2, ruling 1): the token is booth-core's workload issuer's (id.Workload), its subject
-// is a pipeline's, pipeline:<id>, and it carries core's signed booth_owner claim. The run then
-// reads and writes as that owner, an opaque id core resolves at every mint (a person's sub or a
-// service account, ADR 0120). Never an owner from the request: the body has no such field, and an
-// unknown field is refused. Any other workload token keeps ADR 0110 ruling 5: no data access. The
-// subject check matters: a run's own spark:<ws>:<run> token, which its code can read, must not
-// submit another run with data access.
+// (amendment 3, ruling 1): the token is booth-core's workload issuer's (id.Workload), core's signed
+// booth_module claim names the pipeline module, and it carries core's signed booth_owner claim.
+// The trust is the module claim, which core binds to the minting credential; the subject is only
+// a second guard (pipeline:<ws>:<runId>), since any minting module may choose any subject. The
+// run then reads and writes as the owner, an opaque id core resolves at every mint (a person's sub
+// or a service account, ADR 0120). Never an owner from the request: the body has no such field,
+// and an unknown field is refused. Any other workload token keeps ADR 0110 ruling 5: no data
+// access; a run's own spark token, which its code can read, among them.
 func workloadDataOwner(id auth.Identity) (owner, why string) {
 	switch {
+	case id.Module != PipelineModule:
+		return "", "a run submitted with a workload token gets data access only when the pipeline module submits it (ADR 0119); this token was minted for " + orUnnamed(id.Module)
 	case auth.WorkloadKind(id.Subject) != "pipeline":
-		return "", "a run submitted with a workload token gets data access only when a pipeline submits it (ADR 0119); this token's subject is " + id.Subject
+		return "", "a run submitted with a workload token gets data access only under a pipeline run's subject, pipeline:<workspace>:<run> (ADR 0119); this token's subject is " + id.Subject
 	case id.Owner == "":
 		return "", "a run submitted with a pipeline's workload token gets data access only when the token names its owner (booth_owner, signed by booth-core; ADR 0119), and this one doesn't"
 	}
 	return id.Owner, ""
+}
+
+func orUnnamed(module string) string {
+	if module == "" {
+		return "no named module"
+	}
+	return "module " + module
 }
 
 // dataRoleCeiling caps a pipeline-submitted run's token at the lesser of editor and the submitting

@@ -143,8 +143,8 @@ describe("an application's page", () => {
       if (url === "ui/api/applications/r1")
         return {
           json: run({
-            submitter: "pipeline:8",
-            submitterName: "pipeline:8",
+            submitter: "pipeline:acme:p8",
+            submitterName: "pipeline:acme:p8",
             workload: true,
             uiPath: undefined,
             dataOwner: "svc:acme:nightly",
@@ -157,7 +157,7 @@ describe("an application's page", () => {
     });
     window.location.hash = "#/applications/r1";
     render(<App />);
-    expect(await screen.findByText("pipeline:8 (a workload)")).toBeInTheDocument();
+    expect(await screen.findByText("pipeline:acme:p8 (a workload)")).toBeInTheDocument();
     expect(screen.getByText("Acting as")).toBeInTheDocument();
     expect(screen.getByText("svc:acme:nightly")).toBeInTheDocument();
     expect(screen.getByText(/has no Spark UI in Booth/)).toBeInTheDocument();

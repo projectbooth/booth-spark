@@ -70,13 +70,18 @@ var people = fixedTokens{
 	"operator": {Subject: "op-1", Groups: []string{"/workspaces/acme/viewer", "/platform/operator"}},
 	"globex":   {Subject: "g-1", Groups: []string{"/workspaces/globex/owner"}},
 	"run":      {Subject: "pipeline:7", Groups: []string{"/workspaces/acme/editor"}, Workload: true},
-	// ADR 0119: workload tokens carrying core's signed booth_owner claim (auth.Verifier reads it
-	// off core's tokens only).
-	"pipeline":        {Subject: "pipeline:8", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
-	"pipeline-svc":    {Subject: "pipeline:9", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "svc:acme:nightly"},
-	"pipeline-viewer": {Subject: "pipeline:10", Groups: []string{"/workspaces/acme/viewer"}, Workload: true, Owner: "u-alice"},
-	"spark-run":       {Subject: "spark:acme:r1", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
-	"streamlit-app":   {Subject: "streamlit:acme:a1", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
+	// ADR 0119: workload tokens carrying core's signed booth_module and booth_owner claims
+	// (auth.Verifier reads them off core's tokens only).
+	"pipeline":          {Subject: "pipeline:acme:p8", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "pipeline", Owner: "u-alice"},
+	"pipeline-task2":    {Subject: "pipeline:acme:p8", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "pipeline", Owner: "u-alice"},
+	"pipeline-svc":      {Subject: "pipeline:acme:p9", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "pipeline", Owner: "svc:acme:nightly"},
+	"pipeline-viewer":   {Subject: "pipeline:acme:p10", Groups: []string{"/workspaces/acme/viewer"}, Workload: true, Module: "pipeline", Owner: "u-alice"},
+	"pipeline-no-owner": {Subject: "pipeline:acme:p11", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "pipeline"},
+	"pipeline-old-sub":  {Subject: "run:p12", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "pipeline", Owner: "u-alice"},
+	// Another minting module, choosing a pipeline-shaped subject: the prefix proves nothing.
+	"streamlit-as-pipeline": {Subject: "pipeline:acme:p13", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "streamlit", Owner: "u-alice"},
+	"spark-run":             {Subject: "spark:acme:r1", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Module: "spark", Owner: "u-alice"},
+	"no-module":             {Subject: "pipeline:acme:p14", Groups: []string{"/workspaces/acme/editor"}, Workload: true, Owner: "u-alice"},
 }
 
 func appsRouter(t *testing.T, s *runs.Store, minRole auth.Role, adm runs.Admission) http.Handler {
