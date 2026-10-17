@@ -194,6 +194,11 @@ the driver exits.
   busy or not). An operator with cluster access can still delete the session's namespace
   (`bspark-<id>`); the controller then records the session as failed.
 
+- **A retried statement runs twice.** `POST /v1/sessions/{id}/statements` ignores
+  `Idempotency-Key`, unlike `POST /v1/applications` and `POST /v1/sessions`. A client that resends
+  a statement after a timeout or a dropped connection adds a second statement. Before resending,
+  check the session's statements (`GET /v1/sessions/{id}/statements`) for the first one.
+
 ## Result retention
 
 `sessions.resultRetention` (default `168h`, 7 days) is how long an ended run's content is kept.

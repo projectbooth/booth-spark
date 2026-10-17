@@ -115,12 +115,22 @@ ns_gone() {
 # module_db SQL: runs one query against booth-spark's own database (core's bundled Postgres, through
 # the DSN core delivered) from a throwaway psql pod in the module's namespace, which core labels as
 # a database client; prints the unaligned result. For what no API shows (an application's code).
+# When the pod fails or prints nothing, its exit status and kubectl's and psql's error output go to
+# stderr (the CI log), so an empty result explains itself; stdout stays the result alone.
 module_db() {
-  local dsn name
+  local dsn name out err rc=0
   dsn=$(kubectl -n booth-spark get secret booth-database-credentials -o jsonpath='{.data.dsn}' | base64 -d)
   name=psql-$(date +%s%N | tail -c 7)
-  kubectl -n booth-spark run "$name" --rm -i --quiet --restart=Never --image=postgres:16-alpine \
-    --env="DSN=$dsn" --command -- sh -c 'psql "$DSN" -tA -v ON_ERROR_STOP=1 -c "$0"' "$1" 2>/dev/null
+  err=$(mktemp)
+  out=$(kubectl -n booth-spark run "$name" --rm -i --quiet --restart=Never --image=postgres:16-alpine \
+    --env="DSN=$dsn" --command -- sh -c 'psql "$DSN" -tA -v ON_ERROR_STOP=1 -c "$0"' "$1" 2>"$err") || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+    echo "module_db: pod $name exited $rc with ${#out} bytes of output; its stderr:" >&2
+    sed 's/^/  | /' "$err" >&2
+  fi
+  rm -f "$err"
+  printf '%s\n' "$out"
+  return "$rc"
 }
 
 # --- sessions (build step 4) ---
