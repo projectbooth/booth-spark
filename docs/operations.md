@@ -194,6 +194,11 @@ the driver exits.
   busy or not). An operator with cluster access can still delete the session's namespace
   (`bspark-<id>`); the controller then records the session as failed.
 
+- **A long Scala session runs out of metaspace.** Each Scala statement's classes stay loaded for
+  the session's life (about 0.15 MiB a statement, measured), and metaspace is capped at 320m: after
+  roughly a thousand statements the session's driver fails with `OutOfMemoryError: Metaspace`.
+  Start a new session to begin again.
+
 - **A retried statement runs twice.** `POST /v1/sessions/{id}/statements` ignores
   `Idempotency-Key`, unlike `POST /v1/applications` and `POST /v1/sessions`. A client that resends
   a statement after a timeout or a dropped connection adds a second statement. Before resending,
@@ -317,6 +322,14 @@ file in booth-storage (pinnable by `sha256` like the others). `/v1/limits` lists
   cache at 128m. Admission counts it. Executors, JARs and Python runs are sized as before.
 - **Retention** clears inline Scala as it clears inline Python; its length and SHA-256 stay on the
   record.
+- **Scala sessions.** A session's `language` is `python` (the default) or `scala`, chosen when it
+  starts (the New session page's **Language**) and fixed after. A Scala session runs statements of
+  kind `scala` and `sql`; `python` there (or `scala` in a Python session) is 400. Its statements run
+  in order in one interpreter, so what one defines the next can use, as in a Python session; a
+  statement's output is what it printed plus the interpreter's echo (`val n: Long = 3`), as in
+  `spark-shell`. A statement that doesn't compile or throws is `error` with the compiler's message or
+  the exception, and the session goes on. `sql` gives the same JSON in both flavours. Its driver is
+  sized as a Scala application's (1152Mi at the default 512m heap).
 
 ### Runs a pipeline submits (ADR 0119)
 

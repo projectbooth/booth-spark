@@ -215,3 +215,57 @@ func TestSessions_ContentCleared(t *testing.T) {
 		t.Errorf("statement after clearing: %d %s", code, body)
 	}
 }
+
+// ADR 0121 ruling 5: a session's language is chosen when it starts and decides its statement kinds;
+// sql works in both.
+func TestSessions_Language(t *testing.T) {
+	s := testStore(t)
+	scala := func(on bool) func(who, ws, method, path, body string) (int, string) {
+		r := NewRouter(Deps{DB: fakeDB{}, Tokens: people, Iframe: fakeIframe{}, SubmitMinRole: auth.RoleEditor, Applications: &Applications{
+			Store: s, Admission: roomy,
+			Limits: runs.Limits{MaxExecutors: 2, DefaultExecutors: 2, DriverMemory: "512m", ExecutorMemory: "512m", MaxMemory: "2g",
+				MaxDuration: 6 * time.Hour, SessionIdleTimeout: 20 * time.Minute, SessionMaxLifetime: 12 * time.Hour, Scala: on},
+		}})
+		return func(who, ws, method, path, body string) (int, string) {
+			rec := call(r, who, ws, method, path, body)
+			return rec.Code, rec.Body.String()
+		}
+	}
+	h := scala(true)
+
+	code, body := h("editor", "acme", "POST", "/v1/sessions", `{"name":"scala","language":"scala"}`)
+	if code != 201 || !strings.Contains(body, `"language":"scala"`) {
+		t.Fatalf("a Scala session: %d %s", code, body)
+	}
+	sc := idOf(t, body)
+	if !strings.Contains(body, `"footprintMi":2944`) {
+		t.Errorf("a Scala session's footprint (1152 + 2 x 896): %s", body)
+	}
+	code, body = h("editor", "acme", "POST", "/v1/sessions", `{"name":"py"}`)
+	if code != 201 || !strings.Contains(body, `"language":"python"`) {
+		t.Fatalf("a session without a language: %d %s", code, body)
+	}
+	py := idOf(t, body)
+
+	for _, c := range []struct {
+		session, kind string
+		want           int
+	}{
+		{sc, "scala", 201}, {sc, "sql", 201}, {sc, "python", 400},
+		{py, "python", 201}, {py, "sql", 201}, {py, "scala", 400},
+	} {
+		code, body := h("editor", "acme", "POST", "/v1/sessions/"+c.session+"/statements", `{"kind":"`+c.kind+`","code":"1"}`)
+		if code != c.want {
+			t.Errorf("kind %s in session %s: %d %s, want %d", c.kind, c.session, code, body, c.want)
+		}
+		if code == 400 && !strings.Contains(body, "session's language is fixed when it starts") {
+			t.Errorf("kind %s refused without the reason: %s", c.kind, body)
+		}
+	}
+	if code, body := h("editor", "acme", "POST", "/v1/sessions", `{"name":"x","language":"r"}`); code != 400 {
+		t.Errorf("language r: %d %s", code, body)
+	}
+	if code, body := scala(false)("editor", "acme", "POST", "/v1/sessions", `{"name":"x","language":"scala"}`); code != 422 || !strings.Contains(body, "runs.scala.enabled") {
+		t.Errorf("a Scala session where Scala isn't offered: %d %s", code, body)
+	}
+}

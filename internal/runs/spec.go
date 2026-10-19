@@ -96,7 +96,17 @@ type SessionSpec struct {
 	IdleTimeout string `json:"idleTimeout,omitempty"`
 	// MaxLifetime stops the session after this long regardless; at most Limits.SessionMaxLifetime.
 	MaxLifetime string `json:"maxLifetime,omitempty"`
+	// Language is the session's flavour, fixed at creation (ADR 0121 ruling 5): "python" (the
+	// default; statements of kind sql or python) or "scala" (sql or scala, run by the image's Scala
+	// runner).
+	Language string `json:"language,omitempty"`
 }
+
+// Session languages (ADR 0121 ruling 5).
+const (
+	LanguagePython = "python"
+	LanguageScala  = "scala"
+)
 
 // Limits are the chart's `runs` and `sessions` settings that bound what a caller may ask for.
 type Limits struct {
@@ -125,6 +135,22 @@ type Validated struct {
 	Duration       time.Duration
 	// IdleTimeout is a session's (zero for an application).
 	IdleTimeout time.Duration
+	// Language is a session's flavour: "python" or "scala" (empty for an application, and for a
+	// session recorded before ADR 0121: Python).
+	Language string `json:",omitempty"`
+}
+
+// ScalaDriver reports whether the run's driver runs the Scala runner: Scala source, or a Scala
+// session.
+func (v Validated) ScalaDriver() bool { return v.Main.IsScala() || v.Language == LanguageScala }
+
+// StatementKinds are the statement kinds a session runs: sql in both flavours (ruling 3), and its
+// language's own.
+func (v Validated) StatementKinds() []string {
+	if v.Language == LanguageScala {
+		return []string{"sql", "scala"}
+	}
+	return []string{"sql", "python"}
 }
 
 // A ValidationError is the caller's mistake (400). An Unavailable is something this version can't
@@ -205,7 +231,7 @@ const ScalaDriverJavaOptions = "-XX:MaxMetaspaceSize=320m -XX:ReservedCodeCacheS
 
 // DriverPodMemoryMi is the run's driver pod memory, without data sidecars.
 func (v Validated) DriverPodMemoryMi() int {
-	if v.Main.IsScala() {
+	if v.ScalaDriver() {
 		return ScalaDriverPodMemoryMi(v.DriverHeapMi)
 	}
 	return PodMemoryMi(v.DriverHeapMi)
@@ -261,6 +287,17 @@ func ValidateSession(s SessionSpec, l Limits) (Validated, error) {
 	v, err := validateCommon(Spec{Name: s.Name, Resources: s.Resources, Conf: s.Conf, DataAccess: s.DataAccess}, l)
 	if err != nil {
 		return v, err
+	}
+	switch s.Language {
+	case "", LanguagePython:
+		v.Language = LanguagePython
+	case LanguageScala:
+		if !l.Scala {
+			return v, Unavailable{"a Scala session isn't offered on this install (runs.scala.enabled, with a runtime image that carries the Scala runner)"}
+		}
+		v.Language = LanguageScala
+	default:
+		return v, invalid("language: python or scala")
 	}
 	dur := func(field, given string, max time.Duration) (time.Duration, error) {
 		if given == "" {

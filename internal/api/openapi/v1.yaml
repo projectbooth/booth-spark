@@ -738,9 +738,18 @@ components:
         maxLifetime:
           type: string
           description: "A Go duration, at most sessions.maxLifetime (the default)"
+        language:
+          type: string
+          enum: [python, scala]
+          description: |
+            The session's flavour, fixed when it starts (default python). A python session runs
+            statements of kind sql or python; a scala session (where limits.languages has scala,
+            otherwise 422) runs sql or scala, in the runtime image's Scala runner: statements run in
+            order in one interpreter, so what one defines the next can use. sql gives the same JSON in
+            both.
     Session:
       type: object
-      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources, idleTimeout, maxLifetime]
+      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources, idleTimeout, maxLifetime, language]
       properties:
         id: {type: string}
         kind: {type: string, enum: [session]}
@@ -760,6 +769,7 @@ components:
         footprintMi: {type: integer}
         idleTimeout: {type: string}
         maxLifetime: {type: string}
+        language: {type: string, enum: [python, scala]}
         resources:
           type: object
           required: [driverMemory, executorMemory, minExecutors, maxExecutors]
@@ -775,7 +785,10 @@ components:
       additionalProperties: false
       required: [kind, code]
       properties:
-        kind: {type: string, enum: [sql, python]}
+        kind:
+          type: string
+          enum: [sql, python, scala]
+          description: "sql in any session; python in a python session; scala in a scala session (otherwise 400)"
         code: {type: string, minLength: 1, maxLength: 262144}
     Statement:
       type: object
@@ -784,16 +797,17 @@ components:
         id: {type: string}
         sessionId: {type: string}
         seq: {type: integer}
-        kind: {type: string, enum: [sql, python]}
+        kind: {type: string, enum: [sql, python, scala]}
         code: {type: string}
         state: {type: string, enum: [waiting, running, available, error, cancelled]}
         output:
           description: |
             Once available: for sql, {"type": "table", "columns": [{name, type}], "rows": [[...]],
-            "truncated"} (at most 1000 rows and 1 MiB); for python, {"type": "text", "stdout",
-            "stderr", "truncated"} (at most 1 MiB each).
+            "truncated"} (at most 1000 rows and 1 MiB; the same JSON in either flavour); for python
+            and scala, {"type": "text", "stdout", "stderr", "truncated"} (at most 1 MiB each; a scala
+            statement's stdout also has the interpreter's echo of what it defined, as in spark-shell).
           type: object
-        error: {type: string, description: "The traceback of a statement that ended as error, or why it was cancelled"}
+        error: {type: string, description: "The traceback (python), the compiler's message or the exception (scala) of a statement that ended as error, or why it was cancelled"}
         createdAt: {type: string, format: date-time}
         startedAt: {type: string, format: date-time}
         finishedAt: {type: string, format: date-time}

@@ -386,7 +386,7 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 			conf[k] = val
 		}
 	}
-	if v.Main.IsScala() {
+	if v.ScalaDriver() {
 		// Client mode: spark-submit's launcher starts the driver JVM with these.
 		conf["spark.driver.extraJavaOptions"] = ScalaDriverJavaOptions
 	}
@@ -397,6 +397,8 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 	}
 	args = append(args, sparkconf.Args(conf)...)
 	switch {
+	case r.Kind == "session" && v.Language == LanguageScala:
+		return append(args, "--class", "booth.runner.Session", ScalaRunnerJar)
 	case r.Kind == "session":
 		return append(args, runMountPath+"/"+mainKey)
 	case v.Main.Jar != nil:
