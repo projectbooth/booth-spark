@@ -271,7 +271,7 @@ The value mapping has to match Python's `json.dumps(default=str)`:
 | numbers and booleans | native |
 | decimals | strings, as Python's `str(Decimal)` |
 | dates and timestamps | strings in Python's `str()` form (`2024-01-01 00:00:00`) |
-| binary | Python's `str()` of the bytes (`bytearray(b'…')`), kept for equality, worth revisiting |
+| binary | Python's `str()` of the bytes PySpark 4 collects (`b'\x00A'`), kept for equality (as built: the golden check found `bytes`, not `bytearray`) |
 | null | `null` |
 | arrays | JSON arrays |
 | structs | JSON arrays of their fields (PySpark's `Row` is a tuple) |

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ type sessionView struct {
 	} `json:"resources"`
 	IdleTimeout string `json:"idleTimeout"`
 	MaxLifetime string `json:"maxLifetime"`
+	// Language is the session's flavour (ADR 0121 ruling 5): python or scala.
+	Language string `json:"language"`
 	// UIPath is where the session's Spark UI opens in the shell while it runs (its submitter only).
 	UIPath string `json:"uiPath,omitempty"`
 	// DataAccess is what the session asked for and, once it launched, what it got.
@@ -46,6 +49,10 @@ func sview(r runs.Run) sessionView {
 	v.Resources.MinExecutors = r.Spec.MinExecutors
 	v.Resources.MaxExecutors = r.Spec.MaxExecutors
 	v.IdleTimeout = r.Spec.IdleTimeout.String()
+	v.Language = r.Spec.Language
+	if v.Language == "" {
+		v.Language = runs.LanguagePython
+	}
 	v.MaxLifetime = r.Spec.Duration.String()
 	if r.State == runs.Running {
 		v.UIPath = uiproxy.BasePath(r.ID) + "/"
@@ -258,8 +265,12 @@ func (a Applications) addStatement(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid", "body: "+err.Error())
 		return
 	}
-	if body.Kind != "sql" && body.Kind != "python" {
-		apiError(w, http.StatusBadRequest, "invalid", "kind: sql or python")
+	if kinds := s.Spec.StatementKinds(); !slices.Contains(kinds, body.Kind) {
+		lang := s.Spec.Language
+		if lang == "" {
+			lang = runs.LanguagePython
+		}
+		apiError(w, http.StatusBadRequest, "invalid", "kind: "+strings.Join(kinds, " or ")+" in a "+lang+" session (a session's language is fixed when it starts)")
 		return
 	}
 	if strings.TrimSpace(body.Code) == "" || len(body.Code) > 256<<10 {

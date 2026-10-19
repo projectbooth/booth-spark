@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func scalaLimits() Limits {
@@ -166,5 +167,77 @@ func TestBuild_Scala(t *testing.T) {
 	}
 	if !strings.Contains(gate, "--to=/opt/booth/main/main.scala") || !strings.Contains(gate, "--sha256="+sum) || !strings.Contains(gate, "--source=main.scala (booth-storage lake/jobs/etl.scala)") {
 		t.Errorf("Scala file start gate: %s", gate)
+	}
+}
+
+// ADR 0121 ruling 5: a session is Python- or Scala-flavoured, chosen at creation.
+func TestValidateSession_Language(t *testing.T) {
+	l := testLimits()
+	l.SessionIdleTimeout, l.SessionMaxLifetime = 20*time.Minute, 12*time.Hour
+	l.Scala = true
+	for given, want := range map[string]string{"": "python", "python": "python", "scala": "scala"} {
+		v, err := ValidateSession(SessionSpec{Name: "s", Language: given}, l)
+		if err != nil || v.Language != want {
+			t.Errorf("language %q: %q %v, want %q", given, v.Language, err, want)
+		}
+	}
+	if _, err := ValidateSession(SessionSpec{Name: "s", Language: "r"}, l); !errors.As(err, new(ValidationError)) {
+		t.Errorf("language r: %v", err)
+	}
+	off := l
+	off.Scala = false
+	var u Unavailable
+	if _, err := ValidateSession(SessionSpec{Name: "s", Language: "scala"}, off); !errors.As(err, &u) || !strings.Contains(err.Error(), "runs.scala.enabled") {
+		t.Errorf("a Scala session without Scala: %v", err)
+	}
+	if _, err := ValidateSession(SessionSpec{Name: "s"}, off); err != nil {
+		t.Errorf("a Python session without Scala: %v", err)
+	}
+	py, _ := ValidateSession(SessionSpec{Name: "s"}, l)
+	sc, _ := ValidateSession(SessionSpec{Name: "s", Language: "scala"}, l)
+	if strings.Join(py.StatementKinds(), ",") != "sql,python" || strings.Join(sc.StatementKinds(), ",") != "sql,scala" {
+		t.Errorf("statement kinds: %v %v", py.StatementKinds(), sc.StatementKinds())
+	}
+	// A session recorded before ADR 0121 has no language: Python.
+	if strings.Join((Validated{}).StatementKinds(), ",") != "sql,python" {
+		t.Error("a session without a language isn't Python")
+	}
+	if sc.DriverPodMemoryMi() != 1152 || py.DriverPodMemoryMi() != 896 {
+		t.Errorf("session drivers: Scala %d, Python %d", sc.DriverPodMemoryMi(), py.DriverPodMemoryMi())
+	}
+}
+
+// A Scala session's driver runs booth.runner.Session from the runner jar, with the JVM caps; a
+// Python session's runs the Python runner as before.
+func TestBuild_ScalaSession(t *testing.T) {
+	l := testLimits()
+	l.SessionIdleTimeout, l.SessionMaxLifetime = 20*time.Minute, 12*time.Hour
+	l.Scala = true
+	v, err := ValidateSession(SessionSpec{Name: "s", Language: "scala"}, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := Build(Run{ID: "rses", Kind: "session", Workspace: "acme", Namespace: "bspark-rses", Spec: v, SessionToken: "tok"},
+		testCluster(), []APIEndpoint{{IP: "172.19.0.3", Port: 6443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := o.DriverPod.Spec.Containers[0]
+	args := strings.Join(c.Args, " ")
+	if !strings.HasSuffix(args, " --class booth.runner.Session /opt/booth/booth-scala-runner.jar") || !strings.Contains(args, "spark.driver.extraJavaOptions="+ScalaDriverJavaOptions) {
+		t.Errorf("Scala session driver args: %s", args)
+	}
+	if c.Resources.Limits.Memory().String() != "1152Mi" {
+		t.Errorf("Scala session driver memory: %s", c.Resources.Limits.Memory())
+	}
+	pv, _ := ValidateSession(SessionSpec{Name: "s"}, l)
+	po, err := Build(Run{ID: "rpys", Kind: "session", Workspace: "acme", Namespace: "bspark-rpys", Spec: pv, SessionToken: "tok"},
+		testCluster(), []APIEndpoint{{IP: "172.19.0.3", Port: 6443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pargs := strings.Join(po.DriverPod.Spec.Containers[0].Args, " ")
+	if !strings.HasSuffix(pargs, " /opt/booth/run/main.py") || strings.Contains(pargs, "booth.runner") || strings.Contains(pargs, "extraJavaOptions") {
+		t.Errorf("a Python session's driver changed: %s", pargs)
 	}
 }

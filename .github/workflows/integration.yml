@@ -342,3 +342,8 @@ jobs:
       # job builds the runtime image from source and is a required check.
       - name: The Scala runner (booth.runner.SelfTest, then booth.runner.Script end to end)
         run: test/scala-runner/run.sh booth-spark-runtime:ci
+
+      # ADR 0121 PR 5: the Scala session runner beside the Python one, both in this image: the same
+      # sql JSON for every type (the golden check), Scala state across statements, errors, refusals.
+      - name: The Scala session runner beside the Python one
+        run: test/scala-runner/session.sh booth-spark-runtime:ci

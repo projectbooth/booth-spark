@@ -251,6 +251,33 @@ grep -qx "NET $db_pod:5432=open" <<<"$(echo "$net")" || fail "control: a data ru
 v1 "$T_editor" DELETE "/sessions/$S" >/dev/null
 ok "Iceberg 3 rows (42), JDBC 3 rows; no bearer in Spark's container; the internal port and Postgres reachable"
 
+step "2b. a Scala session with data access (ADR 0121 PR 5): Scala and sql statements, state kept, the other kind refused"
+fresh
+S=$(start_session "$T_editor" scala-data '{"language":"scala","resources":{"executors":{"max":0}},"dataAccess":{"lakehouse":true}}')
+v1 "$T_editor" GET "/sessions/$S"
+grep -qx scala <<<"$(echo "$body" | jq_ "d['language']")" || fail "the session's language: $body"
+WAIT=300 wait_session "$T_editor" "$S" running >/dev/null
+a=$(stmt "$T_editor" "$S" scala 'case class Sale(region: String, amount: Long)
+val sales = spark.table(s"${booth.catalog}.spark_it.sales").as[Sale]')
+b=$(stmt "$T_editor" "$S" scala 'val doubled = sales.map(_.amount * 2).reduce(_ + _)
+println(s"SCALA-SESSION-DOUBLED $doubled")')
+c=$(stmt "$T_editor" "$S" sql "SELECT count(*) AS n, sum(amount) AS s FROM lakehouse.spark_it.sales")
+d=$(stmt "$T_editor" "$S" scala 'val wrong: Int = doubled.toString')
+e=$(stmt "$T_editor" "$S" scala 'println(s"SCALA-SESSION-STILL ${doubled + 1}")')
+ra=$(wait_stmt "$T_editor" "$S" "$a"); rb=$(wait_stmt "$T_editor" "$S" "$b"); rc=$(wait_stmt "$T_editor" "$S" "$c")
+rd=$(wait_stmt "$T_editor" "$S" "$d"); re=$(wait_stmt "$T_editor" "$S" "$e")
+grep -qx available <<<"$(echo "$ra" | jq_ "d['state']")" || fail "a case class and a typed Dataset over Iceberg: $ra"
+out=$(echo "$rb" | jq_ "d['output']['stdout']")
+grep -qx "SCALA-SESSION-DOUBLED 84" <<<"$(echo "$out")" || fail "a statement using the earlier one's Dataset: $rb"
+grep -q "^val doubled: Long = 84" <<<"$(echo "$out")" || fail "the interpreter's echo: $rb"
+grep -qx '\[3, 42\]' <<<"$(echo "$rc" | jq_ "d['output']['rows'][0]")" || fail "sql in a Scala session: $rc"
+grep -qx error <<<"$(echo "$rd" | jq_ "d['state']")" && grep -q "type mismatch" <<<"$(echo "$rd" | jq_ "d['error']")" || fail "a statement that doesn't compile: $rd"
+grep -qx "SCALA-SESSION-STILL 85" <<<"$(echo "$re" | jq_ "d['output']['stdout']")" || fail "the session after a failed statement: $re"
+v1 "$T_editor" POST "/sessions/$S/statements" '{"kind":"python","code":"print(1)"}'
+[ "$code" = 400 ] && grep -q "in a scala session" <<<"$body" || fail "python in a Scala session: $code $body"
+v1 "$T_editor" DELETE "/sessions/$S" >/dev/null
+ok "a Scala session: typed Dataset over Iceberg, state across statements, sql, an error that doesn't end it; python refused"
+
 step "3. refused at launch, each with its reason"
 fresh
 for c in 'nosuch|{"storage":[{"backendId":"nosuch","path":"x"}]}|could not start: .*credential broker refused read access to nosuch/x' \

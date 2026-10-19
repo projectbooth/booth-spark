@@ -70,6 +70,8 @@ export interface Run {
   resources: { driverMemory: string; executorMemory: string; minExecutors: number; maxExecutors: number; maxDuration?: string };
   idleTimeout?: string;
   maxLifetime?: string;
+  /** A session's flavour (ADR 0121): its statements are sql and this language's. */
+  language?: "python" | "scala";
   uiPath?: string;
   // A run a pipeline submitted (ADR 0119): whom it reads and writes data as (a person's subject or
   // svc:<workspace>:<name>, shown as is) and its token's ceiling, fixed at submit.
@@ -169,7 +171,7 @@ export const api = {
   sessionLogs: (id: string) => call<string>("GET", "sessions/" + enc(id) + "/logs"),
   statements: (id: string) =>
     call<{ statements: Statement[] }>("GET", "sessions/" + enc(id) + "/statements").then((r) => r.statements ?? []),
-  addStatement: (id: string, kind: "sql" | "python", code: string) =>
+  addStatement: (id: string, kind: "sql" | "python" | "scala", code: string) =>
     call<Statement>("POST", "sessions/" + enc(id) + "/statements", { kind, code }),
 };
 

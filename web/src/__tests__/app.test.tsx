@@ -317,6 +317,38 @@ describe("a session's page", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && (c.body as { code: string })?.code === "select 2")).toBe(true));
   });
 
+  it("runs Scala, not Python, in a Scala session", async () => {
+    serve((m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (url === "ui/api/sessions/s1/statements" && m === "POST") return { status: 201, json: { id: "t3", state: "waiting" } };
+      if (url === "ui/api/sessions/s1/statements") return { json: { statements: [] } };
+      if (url === "ui/api/sessions/s1") return { json: { ...session, language: "scala" } };
+      return { json: {} };
+    });
+    window.location.hash = "#/sessions/s1";
+    render(<App />);
+    await userEvent.click(await screen.findByRole("radio", { name: "Scala" }));
+    expect(screen.queryByRole("radio", { name: "Python" })).toBeNull();
+    await userEvent.type(screen.getByLabelText("Statement"), "spark.range(3).count()");
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ kind: "scala", code: "spark.range(3).count()" }));
+  });
+
+  it("starts a Scala session where the install offers Scala", async () => {
+    serve((m, url) => {
+      if (url === "ui/api/me") return { json: { ...editor, limits: { ...editor.limits, languages: ["python", "scala"] } } };
+      if (url === "ui/api/sessions" && m === "POST") return { status: 201, json: { ...session, id: "s9" } };
+      if (url === "ui/api/sessions/s9") return { json: { ...session, id: "s9", language: "scala" } };
+      return { json: { statements: [] } };
+    });
+    window.location.hash = "#/new-session";
+    render(<App />);
+    await userEvent.type(await screen.findByLabelText("Name"), "explore");
+    await userEvent.click(screen.getByRole("radio", { name: "Scala" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({ name: "explore", language: "scala" }));
+  });
+
   it("gives a workspace owner who isn't its submitter no console", async () => {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: { ...editor, subject: "u-owner", role: "owner" } };

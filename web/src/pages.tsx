@@ -456,11 +456,13 @@ export function NewSessionPage({ me }: { me: Me }) {
   const [name, setName] = useState("");
   const [res, setRes] = useState<ResourceChoice>({ driver: "", max: "0", executor: "" });
   const [data, setData] = useState<DataChoice>({ database: false, lakehouse: false, storage: "" });
+  const [language, setLanguage] = useState<"python" | "scala">("python");
   const [error, setError] = useState<Error | undefined>();
+  const scala = !!me.limits?.languages?.includes("scala");
   const submit = (e: FormEvent) => {
     e.preventDefault();
     api
-      .startSession({ name, resources: resources(res), dataAccess: dataAccess(data) })
+      .startSession({ name, language: scala ? language : undefined, resources: resources(res), dataAccess: dataAccess(data) })
       .then((s) => go("sessions/" + encodeURIComponent(s.id)), setError);
   };
   return (
@@ -476,6 +478,17 @@ export function NewSessionPage({ me }: { me: Me }) {
       <Field label="Name">
         <input required value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
+      {scala && (
+        <fieldset>
+          <legend>Language (fixed for the session; SQL works in both)</legend>
+          <label className="check">
+            <input type="radio" name="language" checked={language === "python"} onChange={() => setLanguage("python")} /> Python
+          </label>
+          <label className="check">
+            <input type="radio" name="language" checked={language === "scala"} onChange={() => setLanguage("scala")} /> Scala
+          </label>
+        </fieldset>
+      )}
       <Resources me={me} value={res} onChange={setRes} />
       <DataFields me={me} value={data} onChange={setData} />
       <ErrorBox error={error} />
@@ -487,16 +500,17 @@ export function NewSessionPage({ me }: { me: Me }) {
 export function SessionPage({ id, me }: { id: string; me: Me }) {
   const session = useLoad(() => api.session(id), [id], 3000, (s) => live(s.state));
   const statements = useLoad(() => api.statements(id), [id], 2000, (ss) => ss.some((s) => s.state === "waiting" || s.state === "running"));
-  const [kind, setKind] = useState<"sql" | "python">("sql");
+  const [kind, setKind] = useState<"sql" | "lang">("sql");
   const [code, setCode] = useState("");
   const [error, setError] = useState<Error | undefined>();
   if (session.error) return <ErrorBox error={session.error} />;
   if (!session.value) return <p className="muted">Loading…</p>;
   const s = session.value;
   const mine = s.submitter === me.subject;
+  const scalaSession = s.language === "scala";
   const run = (e: FormEvent) => {
     e.preventDefault();
-    api.addStatement(id, kind, code).then(() => {
+    api.addStatement(id, kind === "sql" ? "sql" : scalaSession ? "scala" : "python", code).then(() => {
       setCode("");
       setError(undefined);
       statements.reload();
@@ -563,7 +577,7 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
               <input type="radio" checked={kind === "sql"} onChange={() => setKind("sql")} /> SQL
             </label>
             <label className="check">
-              <input type="radio" checked={kind === "python"} onChange={() => setKind("python")} /> Python
+              <input type="radio" checked={kind === "lang"} onChange={() => setKind("lang")} /> {scalaSession ? "Scala" : "Python"}
             </label>
           </div>
           <textarea
@@ -572,7 +586,7 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
             aria-label="Statement"
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            placeholder={kind === "sql" ? "SELECT 1" : "print(spark.range(10).count())"}
+            placeholder={kind === "sql" ? "SELECT 1" : scalaSession ? "spark.range(10).count()" : "print(spark.range(10).count())"}
           />
           <button type="submit" disabled={!code.trim()}>
             Run
