@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -128,6 +130,30 @@ func TestWait_HealthAndFetch(t *testing.T) {
 	err := runWait(context.Background(), []string{"--fetch=" + backend.URL + "/missing", "--to=" + filepath.Join(dir, "x.py")}, c)
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("a missing entry point: %v", err)
+	}
+
+	// A pinned entry point (ADR 0121 ruling 3): the bytes fetched must hash to the pin.
+	sum := sha256.Sum256([]byte("print('the entry point')\n"))
+	good := hex.EncodeToString(sum[:])
+	pinned := filepath.Join(dir, "pinned.py")
+	if err := runWait(context.Background(), []string{"--fetch=" + backend.URL + "/internal/main", "--to=" + pinned, "--sha256=" + good}, c); err != nil {
+		t.Errorf("the pinned bytes: %v", err)
+	}
+	if b, _ := os.ReadFile(pinned); string(b) != "print('the entry point')\n" {
+		t.Errorf("pinned entry point = %q", b)
+	}
+	other := strings.Repeat("0", 64)
+	changed := filepath.Join(dir, "changed.py")
+	err = runWait(context.Background(), []string{"--fetch=" + backend.URL + "/internal/main", "--to=" + changed, "--sha256=" + other,
+		"--source=main.python (booth-storage lake/jobs/etl.py)"}, c)
+	if err == nil || err.Error() != "main.python (booth-storage lake/jobs/etl.py) has sha256 "+good+", not the "+other+" the run asked for; the file changed since it was pinned" {
+		t.Errorf("other bytes than the pin: %v", err)
+	}
+	if _, statErr := os.Stat(changed); !os.IsNotExist(statErr) {
+		t.Errorf("bytes that don't match the pin were put in place: %v", statErr)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(left) != 0 {
+		t.Errorf("temporary files left behind: %v", left)
 	}
 	// A sidecar that never gets a lease: the gate gives up with a reason.
 	healthy.Store(false)

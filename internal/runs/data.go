@@ -25,10 +25,13 @@ type StorageLocation struct {
 	Access string `json:"access,omitempty"`
 }
 
-// FileRef is one file in booth-storage: an application's entry point.
+// FileRef is one file in booth-storage: an application's entry point. SHA256, when given, pins
+// the file's content: the run's start gate refuses to start Spark on any other bytes
+// (docs/design-scala.md section 4; ADR 0121 ruling 3).
 type FileRef struct {
 	BackendID string `json:"backendId"`
 	Path      string `json:"path"`
+	SHA256    string `json:"sha256,omitempty"`
 }
 
 // Any reports whether d asks for anything.
@@ -55,6 +58,7 @@ const (
 var (
 	backendRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 	classRE   = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*$`)
+	sha256RE  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // NeedsData reports whether a run needs data access to start: it asked for some, or its entry point
@@ -101,6 +105,9 @@ func validateFileRef(field string, f *FileRef) error {
 	}
 	if strings.HasSuffix(f.Path, "/") {
 		return invalid("%s.path names a directory; it must name a file", field)
+	}
+	if f.SHA256 != "" && !sha256RE.MatchString(f.SHA256) {
+		return invalid("%s.sha256: the file's SHA-256, 64 lowercase hex characters", field)
 	}
 	return nil
 }

@@ -21,6 +21,8 @@ func TestValidate_DataAccess(t *testing.T) {
 			{BackendID: "lake", Path: "raw/2026"}, {BackendID: "lake", Path: "out/", Access: "readwrite"}}}},
 		{Name: "py", Main: Main{Python: &FileRef{BackendID: "lake", Path: "jobs/etl.py"}}},
 		{Name: "jar", Main: Main{Jar: &FileRef{BackendID: "lake", Path: "jobs/etl.jar"}, MainClass: "com.example.Etl"}},
+		{Name: "pinned-jar", Main: Main{Jar: &FileRef{BackendID: "lake", Path: "jobs/etl.jar", SHA256: strings.Repeat("ab", 32)}, MainClass: "com.example.Etl"}},
+		{Name: "pinned-py", Main: Main{Python: &FileRef{BackendID: "lake", Path: "jobs/etl.py", SHA256: strings.Repeat("0f", 32)}}},
 	}
 	for _, s := range ok {
 		v, err := Validate(s, dataLimits())
@@ -50,6 +52,9 @@ func TestValidate_DataAccess(t *testing.T) {
 		"a class that's code":     {Name: "x", Main: Main{Jar: &FileRef{BackendID: "b", Path: "a.jar"}, MainClass: "a; rm -rf"}},
 		"mainClass with python":   {Name: "x", Main: Main{InlinePython: "1", MainClass: "a.B"}},
 		"a directory as a file":   {Name: "x", Main: Main{Python: &FileRef{BackendID: "b", Path: "jobs/"}}},
+		"a short sha256":          {Name: "x", Main: Main{Python: &FileRef{BackendID: "b", Path: "a.py", SHA256: "abc"}}},
+		"an uppercase sha256":     {Name: "x", Main: Main{Python: &FileRef{BackendID: "b", Path: "a.py", SHA256: strings.Repeat("AB", 32)}}},
+		"a sha256 that isn't hex": {Name: "x", Main: Main{Jar: &FileRef{BackendID: "b", Path: "a.jar", SHA256: strings.Repeat("zz", 32)}, MainClass: "a.B"}},
 		"an absolute path":        {Name: "x", Main: inline, DataAccess: loc("/etc")},
 		"a climbing path":         {Name: "x", Main: inline, DataAccess: loc("raw/../../other")},
 		"an empty segment":        {Name: "x", Main: inline, DataAccess: loc("raw//x")},

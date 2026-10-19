@@ -205,6 +205,34 @@ func TestBuild_DataJar(t *testing.T) {
 	if _, err := Build(r, testCluster(), []APIEndpoint{{IP: "1.2.3.4", Port: 6443}}); err == nil {
 		t.Error("built a data run on an install without data access")
 	}
+	gate := func(r Run) string {
+		t.Helper()
+		o, err := Build(r, dataCluster(), []APIEndpoint{{IP: "172.19.0.3", Port: 6443}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range o.DriverPod.Spec.InitContainers {
+			if c.Name == "start-gate" {
+				return strings.Join(c.Args, " ")
+			}
+		}
+		t.Fatal("no start gate")
+		return ""
+	}
+	// Unpinned: the gate fetches whatever the file holds, with no hash to check.
+	if g := gate(r); strings.Contains(g, "--sha256") {
+		t.Errorf("an unpinned JAR's gate checks a hash: %s", g)
+	}
+	// Pinned (ADR 0121 ruling 3): the gate checks the bytes it fetches, and names the file if they differ.
+	sum := strings.Repeat("ab", 32)
+	pinned := dataTestRun(t, Main{Jar: &FileRef{BackendID: "lake", Path: "jobs/etl.jar", SHA256: sum}, MainClass: "com.example.Etl"})
+	if g := gate(pinned); !strings.Contains(g, "--sha256="+sum) || !strings.Contains(g, "--source=main.jar (booth-storage lake/jobs/etl.jar)") {
+		t.Errorf("a pinned JAR's gate: %s", g)
+	}
+	py := dataTestRun(t, Main{Python: &FileRef{BackendID: "lake", Path: "jobs/etl.py", SHA256: sum}})
+	if g := gate(py); !strings.Contains(g, "--source=main.python (booth-storage lake/jobs/etl.py)") {
+		t.Errorf("a pinned Python file's gate: %s", g)
+	}
 }
 
 func TestCheckPlan(t *testing.T) {

@@ -319,6 +319,7 @@ export interface EntryChoice {
   path: string;
   mainClass: string;
   args: string;
+  sha256: string;
 }
 
 /** The form's entry point as the API's main and args. */
@@ -329,7 +330,10 @@ export function entryPoint(c: EntryChoice): { main: Record<string, unknown>; arg
     .map((a) => a.trim())
     .filter(Boolean);
   return {
-    main: { jar: { backendId: c.backendId.trim(), path: c.path.trim().replace(/^\/+/, "") }, mainClass: c.mainClass.trim() },
+    main: {
+      jar: { backendId: c.backendId.trim(), path: c.path.trim().replace(/^\/+/, ""), sha256: c.sha256.trim().toLowerCase() || undefined },
+      mainClass: c.mainClass.trim(),
+    },
     args: args.length ? args : undefined,
   };
 }
@@ -370,6 +374,9 @@ function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onCh
           <Field label="Arguments" hint="One per line (optional)">
             <textarea rows={3} value={value.args} onChange={(e) => set({ args: e.target.value })} />
           </Field>
+          <Field label="SHA-256" hint="Optional: the run refuses to start if the JAR's bytes don't hash to this">
+            <input value={value.sha256} pattern="[0-9a-fA-F]{64}" onChange={(e) => set({ sha256: e.target.value })} />
+          </Field>
         </>
       )}
     </>
@@ -385,6 +392,7 @@ export function NewApplicationPage({ me }: { me: Me }) {
     path: "",
     mainClass: "",
     args: "",
+    sha256: "",
   });
   const [res, setRes] = useState<ResourceChoice>({ driver: "", max: String(me.limits?.defaultExecutors ?? ""), executor: "" });
   const [data, setData] = useState<DataChoice>({ database: false, lakehouse: false, storage: "" });
