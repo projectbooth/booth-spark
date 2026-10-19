@@ -249,7 +249,7 @@ func TestSessions_Language(t *testing.T) {
 
 	for _, c := range []struct {
 		session, kind string
-		want           int
+		want          int
 	}{
 		{sc, "scala", 201}, {sc, "sql", 201}, {sc, "python", 400},
 		{py, "python", 201}, {py, "sql", 201}, {py, "scala", 400},
