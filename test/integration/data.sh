@@ -12,6 +12,8 @@
 #      in one bucket;
 #   4. network: a data run reaches the backend's internal port and booth-database's Postgres; a run
 #      without data access, and a pod outside every run, are dropped there;
+#   1b. a JAR from booth-storage (main.jar, compiled here by the runtime image's scalac) reads both;
+#      its own exit 1, and a main class it lacks, each fail the run;
 #   5. the submitter is demoted to viewer: their editor's run ends, its namespace goes; then loses
 #      access altogether: the same.
 # Every refusal is matched by its reason and has its control.
@@ -106,6 +108,46 @@ grep -qx "s3://lake/acme-lake" <<<"$(echo "$body" | jq_ "d['dataAccess']['wareho
 grep -qx "s3a://lake/acme-files" <<<"$(echo "$body" | jq_ "d['dataAccess']['storageRoots'][0]")" || fail "the run's storage root: $body"
 ns_gone "bspark-$A"
 ok "read on an executor, Iceberg and Postgres written and read back, result in storage; role editor"
+
+step "1b. a JAR from booth-storage (main.jar + mainClass; docs/design-scala.md PR 1): Iceberg and s3a from Scala"
+# Built here by the runtime image's own scalac (Scala 2.13, Spark's jars provided): no sbt, no download.
+jar_dir=$(mktemp -d); chmod 777 "$jar_dir"; cp "$here/fixtures/JarSmoke.scala" "$jar_dir/"
+docker run --rm -v "$jar_dir:/w" --entrypoint sh "${RUNTIME_IMAGE:-booth-spark-runtime:ci}" -c \
+  'cd /w && mkdir classes && java -cp "/opt/spark/jars/*" scala.tools.nsc.Main -usejavacp -release 17 -d classes JarSmoke.scala && cd classes && jar cf ../smoke.jar .' \
+  || fail "compiling the JAR fixture in the runtime image"
+grep -qx put <<<"$(mc_ "mc pipe t/lake/acme-files/jobs/smoke.jar >/dev/null && echo put" <"$jar_dir/smoke.jar")" || fail "putting the JAR"
+# jar_run NAME MAIN-CLASS EXPECTED: submits the JAR as main.jar; sets J (the run) and st (its end state).
+jar_run() {
+  fresh
+  v1 "$T_editor" POST /applications "{\"name\":\"$1\",\"main\":{\"jar\":{\"backendId\":\"lake\",\"path\":\"acme-files/jobs/smoke.jar\"},\"mainClass\":\"$2\"},
+    \"args\":[\"$3\"],\"resources\":{\"executors\":{\"min\":1,\"max\":1}},
+    \"dataAccess\":{\"lakehouse\":true,\"storage\":[{\"backendId\":\"lake\",\"path\":\"acme-files\",\"access\":\"read\"}]}}"
+  [ "$code" = 201 ] || fail "submitting the JAR run $1: $code $body"
+  J=$(echo "$body" | jq_ "d['id']")
+  st=""
+  for _ in $(seq 1 10); do
+    T_editor=$(tok editor-user)
+    st=$(WAIT=60 wait_state "$T_editor" "$J" succeeded failed 2>/dev/null) && break || true
+  done
+  T_editor=$(tok editor-user)
+  jlog=$(logs "$T_editor" "$J")
+}
+jar_run jar-smoke booth.it.JarSmoke 42
+[ "$st" = succeeded ] || { tail -60 <<<"$jlog"; fail "the JAR run ended $st"; }
+for want in "JAR-START scala 2.13" "JAR-ICEBERG-SUM 42" "JAR-CSV-SUM 42" "JAR-PASS"; do
+  grep "^$want" <<<"$jlog" >/dev/null || { tail -40 <<<"$jlog"; fail "the JAR run's log lacks '$want'"; }
+done
+v1 "$T_editor" GET "/applications/$J"
+grep -qx "booth.it.JarSmoke" <<<"$(echo "$body" | jq_ "d['main']['mainClass']")" || fail "the JAR run's view: $body"
+ok "a JAR from booth-storage read the Iceberg table and the CSV as its submitter"
+# The job's own failure fails the run (its exit 1), and a main class the JAR lacks fails it too.
+jar_run jar-wrong-sum booth.it.JarSmoke 41
+[ "$st" = failed ] || fail "a JAR exiting 1 ended $st"
+grep "^JAR-FAIL expected 41" <<<"$jlog" >/dev/null || { tail -40 <<<"$jlog"; fail "the failing JAR run's log lacks JAR-FAIL"; }
+jar_run jar-no-class booth.it.Nope 42
+[ "$st" = failed ] || fail "a JAR run with a main class the JAR lacks ended $st"
+grep "Failed to load class booth.it.Nope" <<<"$jlog" >/dev/null || { tail -40 <<<"$jlog"; fail "the run's log doesn't say the class is missing"; }
+ok "refused, each for its reason: the job's own exit 1, a main class the JAR lacks"
 
 step "2. a session with data access: both tables, and what its Spark container holds"
 fresh
