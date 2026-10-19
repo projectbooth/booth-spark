@@ -260,6 +260,9 @@ Known limits, stated plainly:
   until then S3A sees the path as an empty directory, where real S3 would have nothing. A write in
   `errorifexists` mode to a path deleted less than 2 minutes earlier can therefore fail; overwrite
   and append are unaffected, and Spark ignores the empty `_temporary` a commit leaves behind.
+  Integration's `s3a` job (`test/s3a`) checks S3A against SeaweedFS and accepts exactly this state.
+- **A run a pipeline submitted acts as the pipeline's owner, who may not have written its code**
+  ("Runs a pipeline submits", below).
 
 ### Starting from a JAR
 
@@ -277,9 +280,6 @@ catalog is Spark configuration (`spark.table("lakehouse.<ns>.<table>")`; its nam
 `BOOTH_LAKEHOUSE_CATALOG`), and the storage locations' roots are in `BOOTH_STORAGE` (JSON). The run
 fails with the driver's exit, so a job that exits non-zero, or a main class the JAR lacks
 ("Failed to load class …" in the log), ends `failed`.
-  Integration's `s3a` job (`test/s3a`) checks S3A against SeaweedFS and accepts exactly this state.
-- **A run a pipeline submitted acts as the pipeline's owner, who may not have written its code**
-  (next section).
 
 ### Runs a pipeline submits (ADR 0119)
 
