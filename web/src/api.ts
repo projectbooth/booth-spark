@@ -30,6 +30,8 @@ export interface Me {
     sessionIdleTimeout: string;
     sessionMaxLifetime: string;
     dataAccess: DataLimits;
+    /** The languages runs may be written in (ADR 0121); absent from an older backend: Python only. */
+    languages?: string[];
   };
 }
 
@@ -74,7 +76,16 @@ export interface Run {
   dataOwner?: string;
   dataCeiling?: "editor" | "viewer";
   dataAccess?: DataView;
-  main?: { inlinePythonBytes?: number; inlinePythonSha256?: string; python?: { backendId: string; path: string }; jar?: { backendId: string; path: string }; mainClass?: string };
+  main?: {
+    inlinePythonBytes?: number;
+    inlinePythonSha256?: string;
+    inlineScalaBytes?: number;
+    inlineScalaSha256?: string;
+    python?: { backendId: string; path: string };
+    scala?: { backendId: string; path: string };
+    jar?: { backendId: string; path: string; sha256?: string };
+    mainClass?: string;
+  };
 }
 
 export type StatementState = "waiting" | "running" | "available" | "error" | "cancelled";

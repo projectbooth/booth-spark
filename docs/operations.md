@@ -288,6 +288,36 @@ catalog is Spark configuration (`spark.table("lakehouse.<ns>.<table>")`; its nam
 fails with the driver's exit, so a job that exits non-zero, or a main class the JAR lacks
 ("Failed to load class …" in the log), ends `failed`.
 
+### Scala
+
+With `runs.scala.enabled` (off by default until the chart's `runs.image` pin carries the Scala
+runner; the chart refuses it with plain `apache/spark`), an application may be Scala source:
+`main.inlineScala` (at most 256 KiB; the form's **Scala code** choice) or `main.scala`, a `.scala`
+file in booth-storage (pinnable by `sha256` like the others). `/v1/limits` lists `scala` in
+`languages` where it is on.
+
+- **How it runs.** The runtime image's Scala runner (`/opt/booth/booth-scala-runner.jar`,
+  docs/design-scala.md) runs the script **statement by statement**, as `spark-shell` runs separate
+  lines: a multi-line expression stays whole, a case class defined in one statement works in a typed
+  Dataset in the next, and a statement can't use a `def` defined further down (no forward
+  references). An `object Main { def main(...) }` in a script is not called automatically: a program
+  in that shape belongs in a JAR.
+- **What a script has.** `spark` and `sc`, `args` (the run's `args`), `spark-shell`'s imports
+  (`spark.implicits._`, `org.apache.spark.sql.functions._`), and `booth`: `booth.catalog` (the
+  lakehouse catalog's name), `booth.storage` (the storage locations, with their `root`),
+  `booth.json(value)` and `booth.parseJson(text)`. The lakehouse catalog is Spark configuration, as
+  for Python and JARs: `spark.table(s"${booth.catalog}.<ns>.<table>")`.
+- **How it ends.** It succeeds when every statement does. The first statement that doesn't compile
+  or throws stops it: the compiler's message or the exception is in the log, then `BOOTH-SCALA error:
+  the statement at line N failed; the script stopped there`, and the run fails with the driver's
+  exit code 1. Source that doesn't parse runs nothing. `sys.exit(n)` exits with `n`. Only what the
+  script prints is printed.
+- **Memory.** A Scala driver holds the compiler: its overhead is at least 640Mi instead of 384Mi (a
+  1152Mi pod at the default 512m heap; 1664Mi at 1g), with metaspace capped at 320m and the code
+  cache at 128m. Admission counts it. Executors, JARs and Python runs are sized as before.
+- **Retention** clears inline Scala as it clears inline Python; its length and SHA-256 stay on the
+  record.
+
 ### Runs a pipeline submits (ADR 0119)
 
 A pipeline task submits with its workload token. Its run gets data access, or starts from a file in

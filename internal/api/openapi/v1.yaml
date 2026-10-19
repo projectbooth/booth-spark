@@ -481,7 +481,8 @@ components:
     Limits:
       type: object
       required: [maxExecutors, defaultExecutors, driverMemory, executorMemory, maxMemory, maxDuration,
-        sessionIdleTimeout, sessionMaxLifetime, dataAccess, role, canSubmit, submitMinRole, maxStorageLocations]
+        sessionIdleTimeout, sessionMaxLifetime, dataAccess, role, canSubmit, submitMinRole, maxStorageLocations,
+        languages, entryPoints]
       properties:
         maxExecutors: {type: integer, description: The most executors one run may scale to}
         defaultExecutors: {type: integer, description: Executors when a run asks for none}
@@ -503,6 +504,14 @@ components:
         canSubmit: {type: boolean, description: Whether this caller may submit applications and start sessions}
         submitMinRole: {type: string, enum: [editor, owner]}
         maxStorageLocations: {type: integer, description: The most storage locations one run may name}
+        languages:
+          type: array
+          items: {type: string, enum: [python, scala]}
+          description: The languages runs may be written in on this install (scala where runs.scala.enabled)
+        entryPoints:
+          type: array
+          items: {type: string, enum: [inlinePython, inlineScala, python, scala, jar]}
+          description: The main fields an application may use (the file ones only with booth-storage)
     State:
       type: string
       enum: [pending, running, succeeded, failed, stopped]
@@ -522,9 +531,21 @@ components:
               type: string
               maxLength: 262144
               description: The application's Python source (PySpark), at most 256 KiB
+            inlineScala:
+              type: string
+              maxLength: 262144
+              description: |
+                The application's Scala source, at most 256 KiB, where the install offers Scala
+                (limits.languages has scala; otherwise 422). Run by the runtime image's Scala runner
+                statement by statement, as spark-shell runs separate lines: spark, sc, args, booth and
+                spark-shell's imports are defined; the first statement that doesn't compile or throws
+                ends the run failed (docs/operations.md, "Scala").
             python:
               $ref: "#/components/schemas/FileRef"
               description: A .py file in booth-storage, read as the submitter when the run starts
+            scala:
+              $ref: "#/components/schemas/FileRef"
+              description: A .scala file in booth-storage, read as the submitter when the run starts and run as inlineScala is
             jar:
               $ref: "#/components/schemas/FileRef"
               description: A .jar file in booth-storage, read as the submitter when the run starts
@@ -534,7 +555,9 @@ components:
               description: The JAR's fully qualified main class (with main.jar only)
             inlinePythonBytes: {type: integer, description: Set by the module; ignored on submission}
             inlinePythonSha256: {type: string, description: Set by the module; ignored on submission}
-          description: Exactly one of inlinePython, python or jar
+            inlineScalaBytes: {type: integer, description: Set by the module; ignored on submission}
+            inlineScalaSha256: {type: string, description: Set by the module; ignored on submission}
+          description: Exactly one of inlinePython, inlineScala, python, scala or jar
         args:
           type: array
           maxItems: 64
@@ -674,7 +697,10 @@ components:
           properties:
             inlinePythonBytes: {type: integer, description: "The inline Python's length; kept after sessions.resultRetention clears the code"}
             inlinePythonSha256: {type: string, description: "The inline Python's SHA-256 (hex); kept after the code is cleared"}
+            inlineScalaBytes: {type: integer, description: "The inline Scala's length; kept after sessions.resultRetention clears the code"}
+            inlineScalaSha256: {type: string, description: "The inline Scala's SHA-256 (hex); kept after the code is cleared"}
             python: {$ref: "#/components/schemas/FileRef"}
+            scala: {$ref: "#/components/schemas/FileRef"}
             jar: {$ref: "#/components/schemas/FileRef"}
             mainClass: {type: string}
     SessionSpec:

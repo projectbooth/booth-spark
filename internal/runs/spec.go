@@ -33,18 +33,38 @@ type Spec struct {
 	MaxDuration string `json:"maxDuration,omitempty"`
 }
 
-// Main is the application's entry point: inline Python, or a Python file or a JAR (with its main
-// class) in booth-storage, read as the run's submitter when it starts.
+// Main is the application's entry point: inline Python or Scala, or a Python file, a Scala file or
+// a JAR (with its main class) in booth-storage, read as the run's submitter when it starts. Scala
+// runs through the runtime image's Scala runner (docs/design-scala.md; ADR 0121).
 type Main struct {
 	InlinePython string   `json:"inlinePython,omitempty"`
+	InlineScala  string   `json:"inlineScala,omitempty"`
 	Python       *FileRef `json:"python,omitempty"`
+	Scala        *FileRef `json:"scala,omitempty"`
 	Jar          *FileRef `json:"jar,omitempty"`
 	MainClass    string   `json:"mainClass,omitempty"`
-	// InlinePythonBytes and InlinePythonSHA256 describe the inline Python, set by Validate
-	// (whatever a caller sent). They outlive the code itself, which sessions.resultRetention clears.
+	// InlinePythonBytes and InlinePythonSHA256 (and the Scala pair) describe the inline code, set by
+	// Validate (whatever a caller sent). They outlive the code itself, which
+	// sessions.resultRetention clears.
 	InlinePythonBytes  int    `json:"inlinePythonBytes,omitempty"`
 	InlinePythonSHA256 string `json:"inlinePythonSha256,omitempty"`
+	InlineScalaBytes   int    `json:"inlineScalaBytes,omitempty"`
+	InlineScalaSHA256  string `json:"inlineScalaSha256,omitempty"`
 }
+
+// File is the entry point in booth-storage, if it is one.
+func (m Main) File() *FileRef {
+	switch {
+	case m.Python != nil:
+		return m.Python
+	case m.Scala != nil:
+		return m.Scala
+	}
+	return m.Jar
+}
+
+// IsScala reports whether the entry point is Scala source, which the Scala runner runs.
+func (m Main) IsScala() bool { return m.InlineScala != "" || m.Scala != nil }
 
 // Resources are what a caller may size, within Limits.
 type Resources struct {
@@ -90,6 +110,9 @@ type Limits struct {
 	SessionMaxLifetime time.Duration
 	// Data is which data paths this install offers runs.
 	Data DataLimits
+	// Scala is whether this install runs Scala source (runs.scala.enabled): its runtime image carries
+	// the Scala runner (docs/design-scala.md).
+	Scala bool
 }
 
 // Validated is a Spec with every default applied and every value checked.
@@ -165,6 +188,29 @@ func PodMemoryMi(heapMi int) int {
 	return heapMi + overhead
 }
 
+// ScalaDriverPodMemoryMi is a driver's memory when it runs the Scala runner: the interpreter holds
+// about 240 MiB of metaspace and code cache beyond its heap, measured (docs/design-scala.md section
+// 6; ADR 0121 ruling 8), so the overhead is at least 640MiB. ScalaDriverJavaOptions caps both, so a
+// long session fails with OutOfMemoryError: Metaspace rather than being killed.
+func ScalaDriverPodMemoryMi(heapMi int) int {
+	overhead := heapMi * 4 / 10
+	if overhead < 640 {
+		overhead = 640
+	}
+	return heapMi + overhead
+}
+
+// ScalaDriverJavaOptions are the Scala runner's driver JVM caps (ADR 0121 ruling 8).
+const ScalaDriverJavaOptions = "-XX:MaxMetaspaceSize=320m -XX:ReservedCodeCacheSize=128m"
+
+// DriverPodMemoryMi is the run's driver pod memory, without data sidecars.
+func (v Validated) DriverPodMemoryMi() int {
+	if v.Main.IsScala() {
+		return ScalaDriverPodMemoryMi(v.DriverHeapMi)
+	}
+	return PodMemoryMi(v.DriverHeapMi)
+}
+
 // Validate applies defaults and checks an application's Spec against l.
 func Validate(s Spec, l Limits) (Validated, error) {
 	if !nameRE.MatchString(s.Name) {
@@ -174,9 +220,14 @@ func Validate(s Spec, l Limits) (Validated, error) {
 		return Validated{Spec: s}, err
 	}
 	s.Main.InlinePythonBytes, s.Main.InlinePythonSHA256 = 0, ""
+	s.Main.InlineScalaBytes, s.Main.InlineScalaSHA256 = 0, ""
 	if s.Main.InlinePython != "" {
 		sum := sha256.Sum256([]byte(s.Main.InlinePython))
 		s.Main.InlinePythonBytes, s.Main.InlinePythonSHA256 = len(s.Main.InlinePython), hex.EncodeToString(sum[:])
+	}
+	if s.Main.InlineScala != "" {
+		sum := sha256.Sum256([]byte(s.Main.InlineScala))
+		s.Main.InlineScalaBytes, s.Main.InlineScalaSHA256 = len(s.Main.InlineScala), hex.EncodeToString(sum[:])
 	}
 	if len(s.Args) > maxArgs {
 		return Validated{Spec: s}, invalid("at most %d args", maxArgs)
@@ -288,7 +339,7 @@ func validateCommon(s Spec, l Limits) (Validated, error) {
 // FootprintMi is the most memory a run's pods can use at once: the driver plus every executor it
 // may scale to, each with its data-access sidecars. The admission budget (Limits, memoryBudget) is checked against it.
 func (v Validated) FootprintMi() int {
-	return PodMemoryMi(v.DriverHeapMi) + v.MaxExecutors*PodMemoryMi(v.ExecutorHeapMi) + (1+v.MaxExecutors)*v.SidecarMi()
+	return v.DriverPodMemoryMi() + v.MaxExecutors*PodMemoryMi(v.ExecutorHeapMi) + (1+v.MaxExecutors)*v.SidecarMi()
 }
 
 func allowedConfList() []string {

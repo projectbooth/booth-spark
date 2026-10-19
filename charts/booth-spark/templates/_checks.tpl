@@ -15,6 +15,9 @@ boothmodule.yaml, so it runs on every install, upgrade and template.
 {{- if and .Values.dataAccess.enabled (contains "apache/spark" .Values.runs.image) -}}
 {{- fail "dataAccess.enabled needs runs.image to be booth-spark's runtime image (images/spark-runtime), which adds the JDBC driver, Iceberg, S3A and the module's credential helpers to Spark; plain apache/spark has none of them" -}}
 {{- end -}}
+{{- if and .Values.runs.scala.enabled (contains "apache/spark" .Values.runs.image) -}}
+{{- fail "runs.scala.enabled needs runs.image to be booth-spark's runtime image with the Scala runner (images/spark-runtime, /opt/booth/booth-scala-runner.jar); plain apache/spark has no runner" -}}
+{{- end -}}
 {{- if and .Values.dataAccess.enabled (not (contains "@sha256:" .Values.dataAccess.sidecar.image)) -}}
 {{- fail "dataAccess.sidecar.image must be pinned by digest" -}}
 {{- end -}}

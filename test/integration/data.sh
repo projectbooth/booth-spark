@@ -165,6 +165,58 @@ jar_run jar-no-class booth.it.Nope 42
 grep "Failed to load class booth.it.Nope" <<<"$jlog" >/dev/null || { tail -40 <<<"$jlog"; fail "the run's log doesn't say the class is missing"; }
 ok "refused, each for its reason: the job's own exit 1, a main class the JAR lacks"
 
+step "1c. Scala source (main.inlineScala, main.scala; ADR 0121 PR 4): typed Datasets, Iceberg and s3a, as the submitter"
+fresh
+v1 "$T_editor" GET /limits
+grep -qx '\["python", "scala"\]' <<<"$(echo "$body" | jq_ "d['languages']")" || fail "/v1/limits doesn't offer Scala on this install: $body"
+# scala_run NAME MAIN-JSON: submits a Scala application (no executors, lakehouse and one read-only
+# storage location); sets S (the run), st (its end state), slog (its log) and sview (its view).
+scala_run() {
+  fresh
+  v1 "$T_editor" POST /applications "{\"name\":\"$1\",\"main\":$2,\"args\":[\"x\",\"y\"],\"resources\":{\"executors\":{\"max\":0}},
+    \"dataAccess\":{\"lakehouse\":true,\"storage\":[{\"backendId\":\"lake\",\"path\":\"acme-files\",\"access\":\"read\"}]}}"
+  [ "$code" = 201 ] || fail "submitting the Scala run $1: $code $body"
+  S=$(echo "$body" | jq_ "d['id']")
+  st=""
+  for _ in $(seq 1 10); do
+    T_editor=$(tok editor-user)
+    st=$(WAIT=60 wait_state "$T_editor" "$S" succeeded failed 2>/dev/null) && break || true
+  done
+  T_editor=$(tok editor-user)
+  slog=$(logs "$T_editor" "$S")
+  v1 "$T_editor" GET "/applications/$S"
+  sview=$body
+}
+inline_json=$(python3 -c 'import json,sys; print(json.dumps({"inlineScala": open(sys.argv[1]).read()}))' "$here/fixtures/etl_inline.scala")
+scala_run scala-inline "$inline_json"
+[ "$st" = succeeded ] || { tail -60 <<<"$slog"; fail "the inline Scala run ended $st"; }
+for want in "SCALA-CSV 42" "SCALA-ICEBERG 42" "SCALA-WROTE 84" "SCALA-ARGS x,y"; do
+  grep "^$want" <<<"$slog" >/dev/null || { tail -40 <<<"$slog"; fail "the inline Scala run's log lacks '$want'"; }
+done
+grep -E '^(val|res[0-9]+) ' <<<"$slog" >/dev/null && fail "the inline Scala run echoed the interpreter's results"
+inline_sum=$(sha256sum "$here/fixtures/etl_inline.scala" | cut -d' ' -f1)
+grep -qx "$inline_sum" <<<"$(echo "$sview" | jq_ "d['main']['inlineScalaSha256']")" || fail "the inline Scala run's recorded hash: $sview"
+# A Scala driver's pod: 512m heap + 640Mi overhead (ruling 8), plus the agent and two leases.
+grep -qx 1312 <<<"$(echo "$sview" | jq_ "d['footprintMi']")" || fail "the Scala run's footprint (want 1152 + 160 for its sidecars): $sview"
+ok "inline Scala read the CSV into a typed Dataset and the Iceberg table, wrote a table, got its args"
+
+grep -qx put <<<"$(mc_ "mc pipe t/lake/acme-files/jobs/etl.scala >/dev/null && echo put" <"$here/fixtures/etl_file.scala")" || fail "putting the Scala file"
+file_sum=$(sha256sum "$here/fixtures/etl_file.scala" | cut -d' ' -f1)
+scala_run scala-file "{\"scala\":{\"backendId\":\"lake\",\"path\":\"acme-files/jobs/etl.scala\",\"sha256\":\"$file_sum\"}}"
+[ "$st" = succeeded ] || { tail -60 <<<"$slog"; fail "the Scala file run ended $st"; }
+grep "^SCALA-FILE 3" <<<"$slog" >/dev/null || { tail -40 <<<"$slog"; fail "the Scala file run's log lacks SCALA-FILE 3"; }
+ok "a pinned .scala file from booth-storage ran"
+
+# The control: a statement that doesn't compile stops the script there, and the run fails.
+scala_run scala-broken '{"inlineScala":"println(\"SCALA-BEFORE\")\nval n: Int = \"not an int\"\nprintln(\"SCALA-NEVER\")\n"}'
+[ "$st" = failed ] || fail "a Scala run that doesn't compile ended $st"
+for want in "SCALA-BEFORE" "BOOTH-SCALA error: the statement at line 2 failed; the script stopped there"; do
+  grep -F "$want" <<<"$slog" >/dev/null || { tail -40 <<<"$slog"; fail "the broken Scala run's log lacks '$want'"; }
+done
+grep "^SCALA-NEVER" <<<"$slog" >/dev/null && fail "the broken Scala run ran past its failing statement"
+grep -F "exited with code 1" <<<"$(echo "$sview" | jq_ "d.get('reason')")" >/dev/null || fail "the broken Scala run's reason: $sview"
+ok "a Scala statement that doesn't compile failed the run at its line"
+
 step "2. a session with data access: both tables, and what its Spark container holds"
 fresh
 db_pod=$(kubectl -n booth-database get pod "$(ready_pod booth-database app.kubernetes.io/component=postgres)" -o jsonpath='{.status.podIP}')

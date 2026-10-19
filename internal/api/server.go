@@ -255,13 +255,29 @@ type uiLimits struct {
 	SessionIdleTimeout string          `json:"sessionIdleTimeout"`
 	SessionMaxLifetime string          `json:"sessionMaxLifetime"`
 	DataAccess         runs.DataLimits `json:"dataAccess"`
+	// Languages are the languages runs may be written in, and EntryPoints the main fields an
+	// application may use (ADR 0121): Scala only where runs.scala.enabled, files only with
+	// booth-storage.
+	Languages   []string `json:"languages"`
+	EntryPoints []string `json:"entryPoints"`
 }
 
 func limitsOf(l runs.Limits) uiLimits {
+	langs, entries := []string{"python"}, []string{"inlinePython"}
+	if l.Scala {
+		langs, entries = append(langs, "scala"), append(entries, "inlineScala")
+	}
+	if l.Data.Storage {
+		entries = append(entries, "python")
+		if l.Scala {
+			entries = append(entries, "scala")
+		}
+		entries = append(entries, "jar")
+	}
 	return uiLimits{MaxExecutors: l.MaxExecutors, DefaultExecutors: l.DefaultExecutors, DriverMemory: l.DriverMemory,
 		ExecutorMemory: l.ExecutorMemory, MaxMemory: l.MaxMemory, MaxDuration: l.MaxDuration.String(),
 		SessionIdleTimeout: l.SessionIdleTimeout.String(), SessionMaxLifetime: l.SessionMaxLifetime.String(),
-		DataAccess: l.Data}
+		DataAccess: l.Data, Languages: langs, EntryPoints: entries}
 }
 
 // callerLimits is GET /v1/limits: the install's limits plus what this caller may do with them.

@@ -225,6 +225,34 @@ describe("submitting", () => {
     });
   });
 
+  it("submits Scala code where the install offers Scala, and offers it nowhere else", async () => {
+    serve((m, url) => {
+      if (url === "ui/api/me") return { json: { ...editor, limits: { ...editor.limits, languages: ["python", "scala"] } } };
+      if (url === "ui/api/applications" && m === "POST") return { status: 201, json: run({ id: "r7", state: "pending" }) };
+      if (url.includes("/logs")) return { text: "" };
+      return { json: run({ id: "r7", main: { inlineScalaBytes: 12, inlineScalaSha256: "cd".repeat(32) } }) };
+    });
+    window.location.hash = "#/new";
+    const { unmount } = render(<App />);
+    await userEvent.type(await screen.findByLabelText("Name"), "scala");
+    await userEvent.click(screen.getByRole("radio", { name: "Scala code" }));
+    const box = screen.getByRole("textbox", { name: /^Scala code/ });
+    await userEvent.clear(box);
+    await userEvent.type(box, "println(1)");
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/applications/r7"));
+    expect(calls.find((c) => c.method === "POST")!.body).toMatchObject({ name: "scala", main: { inlineScala: "println(1)" } });
+    expect(await screen.findByText(/inline Scala, 12 bytes, sha256 cdcdcdcdcdcd…/)).toBeInTheDocument();
+    unmount();
+
+    // An install (or an older backend) that doesn't list Scala: no Scala choice.
+    serve((_m, url) => (url === "ui/api/me" ? { json: editor } : { json: {} }));
+    window.location.hash = "#/new";
+    render(<App />);
+    expect(await screen.findByRole("radio", { name: "PySpark code" })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: "Scala code" })).toBeNull();
+  });
+
   it("offers a JAR only when the install offers runs booth-storage", async () => {
     serve((_m, url) => (url === "ui/api/me" ? { json: { ...editor, limits: { ...editor.limits, dataAccess: { database: false, lakehouse: false, storage: false } } } } : { json: {} }));
     window.location.hash = "#/new";

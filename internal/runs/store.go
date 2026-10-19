@@ -334,7 +334,7 @@ func (s *Store) RequestStop(ctx context.Context, id string) error {
 func (s *Store) ClearContent(ctx context.Context, before, at time.Time) (int, error) {
 	n := 0
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', data_bearer = '', spec = spec #- '{main,inlinePython}', content_cleared_at = $2
+		rows, err := tx.Query(ctx, `UPDATE runs SET log_tail = '', session_token = '', data_bearer = '', spec = spec #- '{main,inlinePython}' #- '{main,inlineScala}', content_cleared_at = $2
 			WHERE finished_at IS NOT NULL AND finished_at < $1 AND content_cleared_at IS NULL RETURNING id`, before, at)
 		if err != nil {
 			return err

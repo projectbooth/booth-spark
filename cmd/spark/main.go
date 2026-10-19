@@ -130,7 +130,8 @@ func run() error {
 			Store: store,
 			Limits: runs.Limits{MaxExecutors: rc.MaxExecutors, DefaultExecutors: rc.DefaultExecutors,
 				DriverMemory: rc.Driver.Memory, ExecutorMemory: rc.Executor.Memory, MaxMemory: rc.MaxMemory, MaxDuration: rc.MaxDurationD,
-				SessionIdleTimeout: cfg.SessionIdleTimeout, SessionMaxLifetime: cfg.SessionMaxLifetime, Data: cfg.Data.Limits()},
+				SessionIdleTimeout: cfg.SessionIdleTimeout, SessionMaxLifetime: cfg.SessionMaxLifetime, Data: cfg.Data.Limits(),
+				Scala: rc.Scala.Enabled},
 			Admission: runs.Admission{MaxRunning: rc.MaxRunning, MaxRunningPerWorkspace: rc.MaxRunningPerWorkspace, MemoryBudgetMi: rc.MemoryBudgetMi},
 			LiveLogs: func(ctx context.Context, ns string, tail int64) (string, error) {
 				return launcher.Logs(ctx, ns, tail, 1<<20)
