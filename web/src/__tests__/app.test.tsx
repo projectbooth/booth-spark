@@ -197,6 +197,43 @@ describe("submitting", () => {
     expect(post.body).toMatchObject({ name: "etl", main: { inlinePython: expect.stringContaining("SparkSession") }, dataAccess: { database: true } });
   });
 
+  it("submits a JAR in Storage with its main class and arguments", async () => {
+    serve((m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (url === "ui/api/applications" && m === "POST") return { status: 201, json: run({ id: "r8", state: "pending" }) };
+      if (url.includes("/logs")) return { text: "" };
+      return { json: run({ id: "r8" }) };
+    });
+    window.location.hash = "#/new";
+    render(<App />);
+    await userEvent.type(await screen.findByLabelText("Name"), "scala smoke");
+    await userEvent.click(screen.getByLabelText("JAR in Storage"));
+    expect(screen.queryByRole("textbox", { name: /^PySpark code/ })).toBeNull();
+    await userEvent.type(screen.getByLabelText(/^Storage backend/), "local");
+    await userEvent.type(screen.getByLabelText(/^JAR path/), "/apps/scala-smoke.jar");
+    await userEvent.type(screen.getByLabelText(/^Main class/), "booth.smoke.ScalaSmoke");
+    await userEvent.type(screen.getByLabelText(/^Arguments/), "723445{enter}nfl");
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/applications/r8"));
+    const post = calls.find((c) => c.method === "POST")!;
+    expect(post.body).toEqual({
+      name: "scala smoke",
+      main: { jar: { backendId: "local", path: "apps/scala-smoke.jar" }, mainClass: "booth.smoke.ScalaSmoke" },
+      args: ["723445", "nfl"],
+      resources: expect.anything(),
+    });
+  });
+
+  it("offers a JAR only when the install offers runs booth-storage", async () => {
+    serve((_m, url) => (url === "ui/api/me" ? { json: { ...editor, limits: { ...editor.limits, dataAccess: { database: false, lakehouse: false, storage: false } } } } : { json: {} }));
+    window.location.hash = "#/new";
+    render(<App />);
+    expect(await screen.findByLabelText("JAR in Storage")).toBeDisabled();
+    expect(screen.getByText("A JAR is read from booth-storage, which this install doesn't offer runs.")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "PySpark code" })).toBeChecked();
+    expect(screen.getByRole("textbox", { name: /^PySpark code/ })).toBeInTheDocument();
+  });
+
   it("shows the API's refusal", async () => {
     serve((m, url) => {
       if (url === "ui/api/me") return { json: editor };

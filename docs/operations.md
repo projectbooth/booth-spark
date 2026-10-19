@@ -262,7 +262,24 @@ Known limits, stated plainly:
   and append are unaffected, and Spark ignores the empty `_temporary` a commit leaves behind.
   Integration's `s3a` job (`test/s3a`) checks S3A against SeaweedFS and accepts exactly this state.
 - **A run a pipeline submitted acts as the pipeline's owner, who may not have written its code**
-  (next section).
+  ("Runs a pipeline submits", below).
+
+### Starting from a JAR
+
+The New application page has an **Entry point** choice: PySpark code, or **JAR in Storage** (a
+backend id, the JAR's path in it, its main class and optional arguments, one per line). The API takes
+the same as `main: {jar: {backendId, path}, mainClass}` and `args`. The run reads the JAR from
+booth-storage as its submitter when it starts, so it needs `dataAccess.storage` on the install, and
+it runs whatever the file holds at that moment.
+
+Build the JAR for **Scala 2.13** (Spark 4.x has no other), against **Spark 4.1.3 marked `provided`**,
+for Java 17 or 21 bytecode. Put any other dependency inside it (a fat JAR without Spark); Iceberg,
+hadoop-aws, the AWS SDK and the PostgreSQL JDBC driver are already in the runtime image, and there
+is no `--packages`. At most 256 MiB. A JAR gets the same data access as Python: the lakehouse
+catalog is Spark configuration (`spark.table("lakehouse.<ns>.<table>")`; its name is also in
+`BOOTH_LAKEHOUSE_CATALOG`), and the storage locations' roots are in `BOOTH_STORAGE` (JSON). The run
+fails with the driver's exit, so a job that exits non-zero, or a main class the JAR lacks
+("Failed to load class …" in the log), ends `failed`.
 
 ### Runs a pipeline submits (ADR 0119)
 

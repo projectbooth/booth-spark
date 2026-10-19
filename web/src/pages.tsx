@@ -311,9 +311,81 @@ function resources(c: ResourceChoice) {
   };
 }
 
+/** The application's entry point as the form holds it (docs/design-scala.md, section 2 (b)). */
+export interface EntryChoice {
+  kind: "python" | "jar";
+  code: string;
+  backendId: string;
+  path: string;
+  mainClass: string;
+  args: string;
+}
+
+/** The form's entry point as the API's main and args. */
+export function entryPoint(c: EntryChoice): { main: Record<string, unknown>; args?: string[] } {
+  if (c.kind === "python") return { main: { inlinePython: c.code } };
+  const args = c.args
+    .split("\n")
+    .map((a) => a.trim())
+    .filter(Boolean);
+  return {
+    main: { jar: { backendId: c.backendId.trim(), path: c.path.trim().replace(/^\/+/, "") }, mainClass: c.mainClass.trim() },
+    args: args.length ? args : undefined,
+  };
+}
+
+function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onChange: (v: EntryChoice) => void }) {
+  const storage = !!me.limits?.dataAccess?.storage;
+  const set = (over: Partial<EntryChoice>) => onChange({ ...value, ...over });
+  return (
+    <>
+      <fieldset>
+        <legend>Entry point</legend>
+        <label className="check">
+          <input type="radio" name="entry" checked={value.kind === "python"} onChange={() => set({ kind: "python" })} /> PySpark code
+        </label>
+        <label className="check">
+          <input type="radio" name="entry" checked={value.kind === "jar"} disabled={!storage} onChange={() => set({ kind: "jar" })} /> JAR in
+          Storage
+        </label>
+        {!storage && <p className="muted">A JAR is read from booth-storage, which this install doesn't offer runs.</p>}
+      </fieldset>
+      {value.kind === "python" ? (
+        <Field label="PySpark code" hint="At most 256 KiB. It runs as you, in its own namespace.">
+          <textarea className="code" rows={12} value={value.code} onChange={(e) => set({ code: e.target.value })} />
+        </Field>
+      ) : (
+        <>
+          <div className="row">
+            <Field label="Storage backend" hint="The backend's id in booth-storage, e.g. local">
+              <input required value={value.backendId} onChange={(e) => set({ backendId: e.target.value })} />
+            </Field>
+            <Field label="JAR path" hint="e.g. apps/job.jar, read as you when the run starts">
+              <input required value={value.path} onChange={(e) => set({ path: e.target.value })} />
+            </Field>
+          </div>
+          <Field label="Main class" hint="Fully qualified, e.g. com.example.Main. Built for Scala 2.13 against Spark 4.1.3 (provided).">
+            <input required value={value.mainClass} onChange={(e) => set({ mainClass: e.target.value })} />
+          </Field>
+          <Field label="Arguments" hint="One per line (optional)">
+            <textarea rows={3} value={value.args} onChange={(e) => set({ args: e.target.value })} />
+          </Field>
+        </>
+      )}
+    </>
+  );
+}
+
 export function NewApplicationPage({ me }: { me: Me }) {
   const [name, setName] = useState("");
-  const [code, setCode] = useState("from pyspark.sql import SparkSession\n\nspark = SparkSession.builder.getOrCreate()\nprint(spark.range(10).count())\n");
+  const [entry, setEntry] = useState<EntryChoice>({
+    kind: "python",
+    code: "from pyspark.sql import SparkSession\n\nspark = SparkSession.builder.getOrCreate()\nprint(spark.range(10).count())\n",
+    backendId: "",
+    path: "",
+    mainClass: "",
+    args: "",
+  });
   const [res, setRes] = useState<ResourceChoice>({ driver: "", max: String(me.limits?.defaultExecutors ?? ""), executor: "" });
   const [data, setData] = useState<DataChoice>({ database: false, lakehouse: false, storage: "" });
   const [error, setError] = useState<Error | undefined>();
@@ -322,7 +394,7 @@ export function NewApplicationPage({ me }: { me: Me }) {
     e.preventDefault();
     setBusy(true);
     api
-      .submit({ name, main: { inlinePython: code }, resources: resources(res), dataAccess: dataAccess(data) })
+      .submit({ name, ...entryPoint(entry), resources: resources(res), dataAccess: dataAccess(data) })
       .then((r) => go("applications/" + encodeURIComponent(r.id)), setError)
       .finally(() => setBusy(false));
   };
@@ -335,9 +407,7 @@ export function NewApplicationPage({ me }: { me: Me }) {
       <Field label="Name">
         <input required value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
-      <Field label="PySpark code" hint="At most 256 KiB. It runs as you, in its own namespace.">
-        <textarea className="code" rows={12} value={code} onChange={(e) => setCode(e.target.value)} />
-      </Field>
+      <EntryFields me={me} value={entry} onChange={setEntry} />
       <Resources me={me} value={res} onChange={setRes} />
       <DataFields me={me} value={data} onChange={setData} />
       <ErrorBox error={error} />
