@@ -6,7 +6,9 @@
 #   - hadoop-aws and the AWS SDK v2 bundle it is built against (s3a, for the warehouse and the
 #     declared booth-storage locations), versions matching Spark's own Hadoop 3.4.2;
 #   - booth-spark's two helpers (src/): S3A credentials re-read from the credential sidecar's file,
-#     and Iceberg REST authentication re-read from the run's token file.
+#     and Iceberg REST authentication re-read from the run's token file;
+#   - booth-spark's Scala runner (scala-runner/, /opt/booth/booth-scala-runner.jar), built from
+#     source by the base image's own Scala compiler.
 # Every base image is pinned by digest and every jar by its SHA-256 (each also matches Maven
 # Central's published SHA-1; resolved 2026-10-10).
 #
@@ -48,5 +50,15 @@ RUN javac --release 21 -Xlint:all,-classfile -Werror -d /out -cp "/jars/*:/class
  && jar --create --file /jars/booth-spark-helpers.jar -C /out . \
  && chmod 0644 /jars/*.jar
 
+# booth-spark's Scala runner (scala-runner/; docs/design-scala.md section 3, ADR 0121): Scala source
+# run statement by statement through the Scala REPL's interpreter. Compiled here by the Spark base's
+# own Scala 2.13 compiler against the base's own jars, so this stage fetches nothing and a runner
+# that doesn't fit this Spark and Scala fails the build, not a run.
+FROM spark AS scala-runner
+USER root
+COPY images/spark-runtime/scala-runner/ /src/
+RUN mkdir -p /out/classes  && java -cp "/opt/spark/jars/*" scala.tools.nsc.Main -usejavacp -release 21 -deprecation -feature -Werror       -d /out/classes $(find /src -name '*.scala')  && jar --create --file /out/booth-scala-runner.jar -C /out/classes .  && chmod 0644 /out/booth-scala-runner.jar
+
 FROM spark
 COPY --from=helpers /jars/ /opt/spark/jars/
+COPY --from=scala-runner /out/booth-scala-runner.jar /opt/booth/booth-scala-runner.jar
