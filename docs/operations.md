@@ -270,7 +270,14 @@ The New application page has an **Entry point** choice: PySpark code, or **JAR i
 backend id, the JAR's path in it, its main class and optional arguments, one per line). The API takes
 the same as `main: {jar: {backendId, path}, mainClass}` and `args`. The run reads the JAR from
 booth-storage as its submitter when it starts, so it needs `dataAccess.storage` on the install, and
-it runs whatever the file holds at that moment.
+it runs whatever the file holds at that moment, unless you pin it.
+
+**Pinning an entry file (`sha256`).** `main.jar`, `main.python` (and the form's SHA-256 field) take
+an optional `sha256`: the file's SHA-256 in hex (`sha256sum app.jar`). The run's start gate hashes the
+bytes it copies in and, if they differ, never starts Spark: the run ends `failed` with "could not
+start: main.jar (booth-storage <backend>/<path>) has sha256 <actual>, not the <expected> the run asked
+for". The pin is kept on the run's record after retention clears its content. Inline code takes no
+pin (it is pinned by being inline; its own hash is on the record).
 
 Build the JAR for **Scala 2.13** (Spark 4.x has no other), against **Spark 4.1.3 marked `provided`**,
 for Java 17 or 21 bytecode. Put any other dependency inside it (a fat JAR without Spark); Iceberg,

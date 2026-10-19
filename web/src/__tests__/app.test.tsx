@@ -213,12 +213,13 @@ describe("submitting", () => {
     await userEvent.type(screen.getByLabelText(/^JAR path/), "/apps/scala-smoke.jar");
     await userEvent.type(screen.getByLabelText(/^Main class/), "booth.smoke.ScalaSmoke");
     await userEvent.type(screen.getByLabelText(/^Arguments/), "723445{enter}nfl");
+    await userEvent.type(screen.getByLabelText(/^SHA-256/), "AB".repeat(32));
     await userEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(window.location.hash).toBe("#/applications/r8"));
     const post = calls.find((c) => c.method === "POST")!;
     expect(post.body).toEqual({
       name: "scala smoke",
-      main: { jar: { backendId: "local", path: "apps/scala-smoke.jar" }, mainClass: "booth.smoke.ScalaSmoke" },
+      main: { jar: { backendId: "local", path: "apps/scala-smoke.jar", sha256: "ab".repeat(32) }, mainClass: "booth.smoke.ScalaSmoke" },
       args: ["723445", "nfl"],
       resources: expect.anything(),
     });

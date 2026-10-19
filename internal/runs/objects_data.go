@@ -119,6 +119,14 @@ func (p *DataPlan) locations() []dataLocation {
 	return out
 }
 
+// mainField names the run's booth-storage entry point as the API spells it.
+func mainField(v Validated) string {
+	if v.Main.Jar != nil {
+		return "main.jar"
+	}
+	return "main.python"
+}
+
 // MainFileName is where a run's booth-storage entry point lands in its driver.
 func MainFileName(v Validated) string {
 	if v.Main.Jar != nil {
@@ -258,6 +266,9 @@ func dataPod(r Run, dc DataCluster, fetchMain bool) dataPodParts {
 	gateMounts := []corev1.VolumeMount{tokenRO}
 	if fetchMain {
 		gateArgs = append(gateArgs, "--fetch="+strings.TrimRight(dc.InternalURL, "/")+"/internal/main", "--to="+MainFileName(r.Spec))
+		if f := r.Spec.MainFile(); f != nil && f.SHA256 != "" {
+			gateArgs = append(gateArgs, "--sha256="+f.SHA256, "--source="+mainField(r.Spec)+" (booth-storage "+f.BackendID+"/"+f.Path+")")
+		}
 		gateMounts = append(gateMounts, corev1.VolumeMount{Name: "data", MountPath: dataSecretPath, ReadOnly: true},
 			corev1.VolumeMount{Name: "main", MountPath: mainDir})
 		d.volumes = append(d.volumes, corev1.Volume{Name: "main", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{

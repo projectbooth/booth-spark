@@ -12,7 +12,8 @@
 #      in one bucket;
 #   4. network: a data run reaches the backend's internal port and booth-database's Postgres; a run
 #      without data access, and a pod outside every run, are dropped there;
-#   1b. a JAR from booth-storage (main.jar, compiled here by the runtime image's scalac) reads both;
+#   1b. a JAR from booth-storage (main.jar, compiled here by the runtime image's scalac, pinned by
+#      sha256) reads both; pinned to other bytes it never starts;
 #      its own exit 1, and a main class it lacks, each fail the run;
 #   5. the submitter is demoted to viewer: their editor's run ends, its namespace goes; then loses
 #      access altogether: the same.
@@ -116,10 +117,14 @@ docker run --rm -v "$jar_dir:/w" --entrypoint sh "${RUNTIME_IMAGE:-booth-spark-r
   'cd /w && mkdir classes && java -cp "/opt/spark/jars/*" scala.tools.nsc.Main -usejavacp -release 17 -d classes JarSmoke.scala && cd classes && jar cf ../smoke.jar .' \
   || fail "compiling the JAR fixture in the runtime image"
 grep -qx put <<<"$(mc_ "mc pipe t/lake/acme-files/jobs/smoke.jar >/dev/null && echo put" <"$jar_dir/smoke.jar")" || fail "putting the JAR"
-# jar_run NAME MAIN-CLASS EXPECTED: submits the JAR as main.jar; sets J (the run) and st (its end state).
+jar_sum=$(sha256sum "$jar_dir/smoke.jar" | cut -d' ' -f1)
+# jar_run NAME MAIN-CLASS EXPECTED [SHA256]: submits the JAR as main.jar (pinned to SHA256 if given);
+# sets J (the run), st (its end state) and jlog (its log).
 jar_run() {
   fresh
-  v1 "$T_editor" POST /applications "{\"name\":\"$1\",\"main\":{\"jar\":{\"backendId\":\"lake\",\"path\":\"acme-files/jobs/smoke.jar\"},\"mainClass\":\"$2\"},
+  local pin=""
+  [ -n "${4:-}" ] && pin=",\"sha256\":\"$4\""
+  v1 "$T_editor" POST /applications "{\"name\":\"$1\",\"main\":{\"jar\":{\"backendId\":\"lake\",\"path\":\"acme-files/jobs/smoke.jar\"$pin},\"mainClass\":\"$2\"},
     \"args\":[\"$3\"],\"resources\":{\"executors\":{\"min\":1,\"max\":1}},
     \"dataAccess\":{\"lakehouse\":true,\"storage\":[{\"backendId\":\"lake\",\"path\":\"acme-files\",\"access\":\"read\"}]}}"
   [ "$code" = 201 ] || fail "submitting the JAR run $1: $code $body"
@@ -132,14 +137,25 @@ jar_run() {
   T_editor=$(tok editor-user)
   jlog=$(logs "$T_editor" "$J")
 }
-jar_run jar-smoke booth.it.JarSmoke 42
-[ "$st" = succeeded ] || { tail -60 <<<"$jlog"; fail "the JAR run ended $st"; }
+# Pinned to the JAR's own hash (ADR 0121 ruling 3): the positive control for the mismatch below.
+jar_run jar-smoke booth.it.JarSmoke 42 "$jar_sum"
+[ "$st" = succeeded ] || { tail -60 <<<"$jlog"; fail "the JAR run (pinned to its own sha256) ended $st"; }
 for want in "JAR-START scala 2.13" "JAR-ICEBERG-SUM 42" "JAR-CSV-SUM 42" "JAR-PASS"; do
   grep "^$want" <<<"$jlog" >/dev/null || { tail -40 <<<"$jlog"; fail "the JAR run's log lacks '$want'"; }
 done
 v1 "$T_editor" GET "/applications/$J"
 grep -qx "booth.it.JarSmoke" <<<"$(echo "$body" | jq_ "d['main']['mainClass']")" || fail "the JAR run's view: $body"
-ok "a JAR from booth-storage read the Iceberg table and the CSV as its submitter"
+grep -qx "$jar_sum" <<<"$(echo "$body" | jq_ "d['main']['jar']['sha256']")" || fail "the JAR run's view lacks its pin: $body"
+ok "a JAR from booth-storage, pinned to its sha256, read the Iceberg table and the CSV as its submitter"
+# Pinned to other bytes: the start gate refuses before Spark starts, naming both hashes.
+other=$(printf '0%.0s' $(seq 1 64))
+jar_run jar-other-bytes booth.it.JarSmoke 42 "$other"
+[ "$st" = failed ] || fail "a JAR pinned to other bytes ended $st"
+v1 "$T_editor" GET "/applications/$J"
+reason=$(echo "$body" | jq_ "d.get('reason')")
+grep -F "main.jar (booth-storage lake/acme-files/jobs/smoke.jar) has sha256 $jar_sum, not the $other the run asked for" <<<"$reason" >/dev/null   || fail "a JAR pinned to other bytes: reason '$reason'"
+grep "^JAR-START" <<<"$jlog" >/dev/null && fail "Spark ran a JAR whose bytes didn't match its pin"
+ok "a JAR pinned to other bytes never started: $reason"
 # The job's own failure fails the run (its exit 1), and a main class the JAR lacks fails it too.
 jar_run jar-wrong-sum booth.it.JarSmoke 41
 [ "$st" = failed ] || fail "a JAR exiting 1 ended $st"

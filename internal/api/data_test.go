@@ -78,6 +78,23 @@ func TestData_Submit(t *testing.T) {
 	if rec := call(h, "editor", "acme", "POST", "/v1/applications", `{"name":"x","main":{"inlinePython":"1"},"dataAccess":{"storage":[{"backendId":"b","path":"../x"}]}}`); rec.Code != 400 {
 		t.Errorf("a climbing path: %d", rec.Code)
 	}
+
+	// sha256 on an entry file (ADR 0121 ruling 3): pinned files are accepted and shown; a malformed
+	// pin is 400, and so is a pin on inline code (ruling 7: it is pinned by being inline).
+	sum := strings.Repeat("ab", 32)
+	rec = call(h, "editor", "acme", "POST", "/v1/applications", `{"name":"pinned","main":{"jar":{"backendId":"lake","path":"jobs/etl.jar","sha256":"`+sum+`"},"mainClass":"a.B"}}`)
+	if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"sha256":"`+sum+`"`) {
+		t.Errorf("a pinned JAR: %d %s", rec.Code, rec.Body)
+	}
+	for name, body := range map[string]string{
+		"a malformed pin":    `{"name":"x","main":{"python":{"backendId":"lake","path":"a.py","sha256":"ABC"}}}`,
+		"a pin on inline":    `{"name":"x","main":{"inlinePython":"1","sha256":"` + sum + `"}}`,
+		"a pin beside a jar": `{"name":"x","main":{"jar":{"backendId":"lake","path":"a.jar"},"mainClass":"a.B","sha256":"` + sum + `"}}`,
+	} {
+		if rec := call(h, "editor", "acme", "POST", "/v1/applications", body); rec.Code != 400 {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
 }
 
 // ADR 0119 (amendments 2 and 3): a run the pipeline module submits reads and writes as the

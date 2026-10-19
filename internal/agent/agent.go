@@ -16,6 +16,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -230,6 +232,8 @@ func runWait(ctx context.Context, args []string, c Config) error {
 	fs.Var(&healthz, "healthz", "a sidecar's loopback /healthz (repeatable)")
 	fetch := fs.String("fetch", "", "the backend's /internal/main, to copy the run's entry point from")
 	to := fs.String("to", "", "where the entry point goes")
+	sum := fs.String("sha256", "", "the entry point's SHA-256 the run asked for: any other bytes stop the run")
+	source := fs.String("source", "the entry point", "the entry point, as a refusal names it")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for every sidecar")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -245,7 +249,7 @@ func runWait(ctx context.Context, args []string, c Config) error {
 		if *to == "" {
 			return errors.New("--fetch needs --to")
 		}
-		return fetchMain(ctx, c, *fetch, *to)
+		return fetchMain(ctx, c, *fetch, *to, *sum, *source)
 	}
 	return nil
 }
@@ -267,8 +271,10 @@ func waitHealthy(ctx context.Context, c Config, u string) error {
 	}
 }
 
-// fetchMain copies the run's entry point from booth-storage, through the backend.
-func fetchMain(ctx context.Context, c Config, u, to string) error {
+// fetchMain copies the run's entry point from booth-storage, through the backend. With want (a
+// SHA-256 in hex), the bytes read are hashed as they are written, and on any other hash the file is
+// never put in place: Spark runs exactly what was checked, or nothing.
+func fetchMain(ctx context.Context, c Config, u, to, want, source string) error {
 	bearer, err := readBearer(c.BearerFile)
 	if err != nil {
 		return err
@@ -292,9 +298,14 @@ func fetchMain(ctx context.Context, c Config, u, to string) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmp, h), resp.Body); err != nil {
 		tmp.Close()
 		return fmt.Errorf("reading the run's entry point: %w", err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); want != "" && got != want {
+		tmp.Close()
+		return fmt.Errorf("%s has sha256 %s, not the %s the run asked for; the file changed since it was pinned", source, got, want)
 	}
 	if err := tmp.Chmod(0o444); err != nil {
 		tmp.Close()

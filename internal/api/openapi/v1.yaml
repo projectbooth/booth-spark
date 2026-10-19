@@ -573,6 +573,15 @@ components:
       properties:
         backendId: {type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"}
         path: {type: string, maxLength: 1024, description: "Relative, no '..', '.' or empty segments"}
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Optional: the file's SHA-256 (64 lowercase hex characters). The run's start gate hashes
+            the bytes it copies in and, on any other hash, never starts Spark: the run ends failed,
+            "could not start: main.jar (booth-storage <backend>/<path>) has sha256 <actual>, not the
+            <expected> the run asked for". Without it, the run reads whatever the file holds when it
+            starts. Not accepted on inline code, which is pinned by being inline.
     DataAccess:
       type: object
       additionalProperties: false
