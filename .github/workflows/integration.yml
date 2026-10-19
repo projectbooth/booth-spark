@@ -313,7 +313,8 @@ jobs:
     # SDK v2 2.29.52, SidecarCredentialsProvider) against SeaweedFS 4.48 with a prefix-scoped IAM
     # user's bare key, no session token: read, write, ranged read, rename, multipart, listing, a
     # Spark Parquet job, delete, and refusals outside the prefix (test/s3a). Twice: with S3A's
-    # defaults (no upload checksums), and with CRC32 upload checksums.
+    # defaults (no upload checksums), and with CRC32 upload checksums. Also the runtime image's
+    # Scala runner (ADR 0121; test/scala-runner), since this job builds that image from source.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -334,3 +335,9 @@ jobs:
         env:
           S3A_CHECKSUM: CRC32
         run: test/s3a/run.sh booth-spark-runtime:ci
+
+      # ADR 0121 (docs/design-scala.md, PR 3): the Scala runner built into this image, its self-test
+      # and its scripts end to end on local-cluster (executors in separate JVMs). Here because this
+      # job builds the runtime image from source and is a required check.
+      - name: The Scala runner (booth.runner.SelfTest, then booth.runner.Script end to end)
+        run: test/scala-runner/run.sh booth-spark-runtime:ci
