@@ -135,6 +135,7 @@ func TestBuild_DataPods(t *testing.T) {
 		"spark.sql.catalog.lakehouse=org.apache.iceberg.spark.SparkCatalog",
 		"spark.sql.catalog.lakehouse.uri=http://booth-spark.booth-spark.svc:8081/internal/lakehouse/iceberg",
 		"spark.sql.catalog.lakehouse.rest.auth.type=io.projectbooth.spark.TokenFileAuthManager",
+		"spark.sql.catalog.lakehouse.rest-catalog-purge=true", // ADR 0122 part A
 		"spark.sql.catalog.lakehouse.header.X-Workspace=acme",
 		"spark.hadoop.fs.s3a.bucket.lake.booth.credentials.s3=/var/run/booth/s3/warehouse/credentials",
 		"spark.hadoop.fs.s3a.bucket.lake.booth.credentials.s3a=/var/run/booth/s3/storage-0/credentials",

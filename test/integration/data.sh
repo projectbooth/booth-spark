@@ -15,6 +15,7 @@
 #   1b. a JAR from booth-storage (main.jar, compiled here by the runtime image's scalac, pinned by
 #      sha256) reads both; pinned to other bytes it never starts;
 #      its own exit 1, and a main class it lacks, each fail the run;
+#   1d. DROP TABLE ... PURGE from Python and from Scala (ADR 0122 part A): one request to the catalog;
 #   5. the submitter is demoted to viewer: their editor's run ends, its namespace goes; then loses
 #      access altogether: the same.
 # Every refusal is matched by its reason and has its control.
@@ -216,6 +217,36 @@ done
 grep "^SCALA-NEVER" <<<"$slog" >/dev/null && fail "the broken Scala run ran past its failing statement"
 grep -F "exited with code 1" <<<"$(echo "$sview" | jq_ "d.get('reason')")" >/dev/null || fail "the broken Scala run's reason: $sview"
 ok "a Scala statement that doesn't compile failed the run at its line"
+
+step "1d. DROP TABLE ... PURGE from Python and from Scala (ADR 0122 part A): one request to the catalog, files gone"
+# Without rest-catalog-purge, Iceberg drops the table and then walks and deletes its files itself,
+# racing Lakekeeper's own purge (docs/findings-iceberg-drop-purge.md). With it, Spark deletes
+# nothing: Iceberg's hint to set it, and a deleteReachableFiles job, must not appear.
+for lang in py scala; do
+  if [ "$lang" = py ]; then
+    main=$(python3 -c 'import json,sys; print(json.dumps({"inlinePython": open(sys.argv[1]).read()}))' "$here/fixtures/purge_drop.py")
+  else
+    main=$(python3 -c 'import json,sys; print(json.dumps({"inlineScala": open(sys.argv[1]).read()}))' "$here/fixtures/purge_drop.scala")
+  fi
+  scala_run "purge-$lang" "$main"
+  [ "$st" = succeeded ] || { tail -60 <<<"$slog"; fail "the $lang DROP ... PURGE run ended $st"; }
+  for want in "PURGE-COUNT 10" "PURGE-DROPPED" "PURGE-GONE True"; do
+    grep "^$want" <<<"$slog" >/dev/null || { tail -40 <<<"$slog"; fail "the $lang PURGE run's log lacks '$want'"; }
+  done
+  grep -E "Set 'rest-catalog-purge' to true|DeleteReachableFiles|deleteReachableFiles" <<<"$slog" >/dev/null \
+    && fail "the $lang PURGE run deleted files client-side (rest-catalog-purge is not in effect)"
+  loc=$(sed -n 's/^PURGE-LOCATION s3:\/\///p' <<<"$slog" | head -1)
+  [ -n "$loc" ] || fail "the $lang PURGE run printed no location"
+  # The catalog purges asynchronously (Lakekeeper's tabular_purge task): the location empties within a minute.
+  left=""
+  for _ in $(seq 1 30); do
+    left=$(mc_ "mc ls --recursive t/$loc/ 2>/dev/null | wc -l" | tr -d ' ')
+    [ "$left" = 0 ] && break
+    sleep 2
+  done
+  [ "$left" = 0 ] || fail "$left objects left under s3://$loc after the $lang PURGE"
+  ok "$lang: DROP TABLE ... PURGE succeeded, the table left the catalog, s3://$loc emptied, nothing deleted client-side"
+done
 
 step "2. a session with data access: both tables, and what its Spark container holds"
 fresh

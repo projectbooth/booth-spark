@@ -1,6 +1,8 @@
 # Findings: `DROP TABLE … PURGE` fails against Lakekeeper (2026-10-19)
 
-**Status:** investigation, no code change. Reported from the homelab on booth-spark 0.3.2.
+**Status:** investigation. Its fix 1 is ADR 0122 part A (accepted 2026-10-19): booth-spark sets
+`rest-catalog-purge=true`, in the first release after the NFL gate and cutover. Reported from the
+homelab on booth-spark 0.3.2.
 `scala-smoke.jar`'s last statement, `DROP TABLE lakehouse.scala_smoke.runs PURGE`, failed with
 `org.apache.iceberg.exceptions.NotFoundException: File does not exist:
 s3://lake/warehouse/<uuid>/metadata/snap-<id>.avro`, inside a Spark job (`AllManifestsTable`).

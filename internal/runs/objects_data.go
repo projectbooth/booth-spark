@@ -345,6 +345,12 @@ func DataConf(r Run, dc DataCluster) map[string]string {
 		conf[c+".rest.auth.type"] = "io.projectbooth.spark.TokenFileAuthManager"
 		conf[c+".booth.token-file"] = TokenFile
 		conf[c+".io-impl"] = "org.apache.iceberg.hadoop.HadoopFileIO"
+		// ADR 0122 part A: DROP TABLE ... PURGE asks the catalog to purge (purgeRequested=true) and
+		// Spark deletes nothing itself. Unset, Iceberg sends a plain drop and then walks and deletes
+		// the table's files client-side, racing Lakekeeper's own purge of the same location
+		// (docs/findings-iceberg-drop-purge.md); and with soft delete (part B) an undrop would bring
+		// back a table whose files Spark had already deleted.
+		conf[c+".rest-catalog-purge"] = "true"
 	}
 	return conf
 }
