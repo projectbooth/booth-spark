@@ -63,7 +63,10 @@ try {
 
   await ed.ui.getByRole("button", { name: "New application" }).click();
   await ed.ui.getByLabel("Name", { exact: true }).fill(runName);
-  await ed.ui.getByLabel("PySpark code").fill(code);
+  // PySpark code is the default entry point (ADR 0121 PR 1 added "JAR in Storage" beside it); its
+  // radio and its code box share the words, so the box is found by role.
+  check(await ed.ui.getByRole("radio", { name: "PySpark code" }).isChecked(), "PySpark code is the form's default entry point");
+  await ed.ui.getByRole("textbox", { name: /^PySpark code/ }).fill(code);
   await ed.ui.getByLabel("Executors (most)").fill("0");
   await ed.ui.getByRole("button", { name: "Submit" }).click();
   await ed.ui.getByRole("heading", { name: runName }).waitFor({ timeout: 30_000 });
