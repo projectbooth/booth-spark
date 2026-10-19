@@ -266,6 +266,13 @@ Known limits, stated plainly:
   `errorifexists` mode to a path deleted less than 2 minutes earlier can therefore fail; overwrite
   and append are unaffected, and Spark ignores the empty `_temporary` a commit leaves behind.
   Integration's `s3a` job (`test/s3a`) checks S3A against SeaweedFS and accepts exactly this state.
+- **Dropping a lakehouse table deletes its data** on booth-lakehouse's Lakekeeper, with or without
+  `PURGE` (ADR 0122; docs/findings-iceberg-drop-purge.md): a drop that doesn't say "keep the
+  files" is a purge there, done by Lakekeeper a few seconds later. Every run's catalog sets
+  `rest-catalog-purge=true`, so `DROP TABLE … PURGE` is one request to the catalog and Spark
+  deletes nothing itself (before, Spark's own file walk raced Lakekeeper's purge and failed with
+  `NotFoundException … snap-….avro`). Whether a dropped table can be brought back is
+  booth-lakehouse's delete profile (ADR 0122 part B), not Spark's.
 - **A run a pipeline submitted acts as the pipeline's owner, who may not have written its code**
   ("Runs a pipeline submits", below).
 
