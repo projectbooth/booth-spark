@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +45,7 @@ func TestV1_Limits(t *testing.T) {
 			"maxDuration": "6h0m0s", "sessionIdleTimeout": "30m0s", "sessionMaxLifetime": "8h0m0s",
 			"dataAccess": map[string]any{"database": false, "lakehouse": true, "storage": true},
 			"role":       c.role, "canSubmit": c.canSubmit, "submitMinRole": "editor", "maxStorageLocations": 4.0,
+			"languages": []any{"python"}, "entryPoints": []any{"inlinePython", "python", "jar"},
 		}
 		gotJSON, _ := json.Marshal(got)
 		wantJSON, _ := json.Marshal(want)
@@ -56,8 +59,26 @@ func TestV1_Limits(t *testing.T) {
 		Limits uiLimits `json:"limits"`
 	}
 	rec := do(h, "GET", "/ui/api/me", identity.HeaderIdentity, "editor")
-	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || me.Limits != limitsOf(l) {
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || !reflect.DeepEqual(me.Limits, limitsOf(l)) {
 		t.Errorf("ui limits: %d %s", rec.Code, rec.Body)
+	}
+
+	// With Scala on (ADR 0121): scala among the languages, inlineScala and scala among the entry points.
+	l.Scala = true
+	hs := NewRouter(Deps{DB: fakeDB{}, Tokens: people, Iframe: callers, SubmitMinRole: auth.RoleEditor, Applications: &Applications{Limits: l}})
+	var got struct {
+		Languages   []string `json:"languages"`
+		EntryPoints []string `json:"entryPoints"`
+	}
+	_ = json.Unmarshal(call(hs, "editor", "acme", "GET", "/v1/limits", "").Body.Bytes(), &got)
+	if strings.Join(got.Languages, ",") != "python,scala" || strings.Join(got.EntryPoints, ",") != "inlinePython,inlineScala,python,scala,jar" {
+		t.Errorf("with Scala: %+v", got)
+	}
+	l.Data.Storage = false
+	hs = NewRouter(Deps{DB: fakeDB{}, Tokens: people, Iframe: callers, SubmitMinRole: auth.RoleEditor, Applications: &Applications{Limits: l}})
+	_ = json.Unmarshal(call(hs, "editor", "acme", "GET", "/v1/limits", "").Body.Bytes(), &got)
+	if strings.Join(got.EntryPoints, ",") != "inlinePython,inlineScala" {
+		t.Errorf("with Scala, without booth-storage: %+v", got)
 	}
 
 	// Refusals, each for its own reason.

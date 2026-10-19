@@ -134,13 +134,23 @@ function Facts({ run }: { run: Run }) {
           </dd>
         </>
       )}
-      {(run.main?.python || run.main?.jar) && (
+      {run.main?.inlineScalaSha256 && (
+        <>
+          <dt>Code</dt>
+          <dd className="mono">
+            inline Scala, {run.main.inlineScalaBytes} bytes, sha256 {run.main.inlineScalaSha256.slice(0, 12)}…
+          </dd>
+        </>
+      )}
+      {(run.main?.python || run.main?.scala || run.main?.jar) && (
         <>
           <dt>Code</dt>
           <dd className="mono">
             {run.main.python
               ? `${run.main.python.backendId}/${run.main.python.path}`
-              : `${run.main.jar!.backendId}/${run.main.jar!.path} (${run.main.mainClass})`}
+              : run.main.scala
+                ? `${run.main.scala.backendId}/${run.main.scala.path} (Scala)`
+                : `${run.main.jar!.backendId}/${run.main.jar!.path} (${run.main.mainClass})`}
           </dd>
         </>
       )}
@@ -313,8 +323,9 @@ function resources(c: ResourceChoice) {
 
 /** The application's entry point as the form holds it (docs/design-scala.md, section 2 (b)). */
 export interface EntryChoice {
-  kind: "python" | "jar";
+  kind: "python" | "scala" | "jar";
   code: string;
+  scalaCode: string;
   backendId: string;
   path: string;
   mainClass: string;
@@ -325,6 +336,7 @@ export interface EntryChoice {
 /** The form's entry point as the API's main and args. */
 export function entryPoint(c: EntryChoice): { main: Record<string, unknown>; args?: string[] } {
   if (c.kind === "python") return { main: { inlinePython: c.code } };
+  if (c.kind === "scala") return { main: { inlineScala: c.scalaCode } };
   const args = c.args
     .split("\n")
     .map((a) => a.trim())
@@ -340,6 +352,7 @@ export function entryPoint(c: EntryChoice): { main: Record<string, unknown>; arg
 
 function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onChange: (v: EntryChoice) => void }) {
   const storage = !!me.limits?.dataAccess?.storage;
+  const scala = !!me.limits?.languages?.includes("scala");
   const set = (over: Partial<EntryChoice>) => onChange({ ...value, ...over });
   return (
     <>
@@ -348,6 +361,11 @@ function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onCh
         <label className="check">
           <input type="radio" name="entry" checked={value.kind === "python"} onChange={() => set({ kind: "python" })} /> PySpark code
         </label>
+        {scala && (
+          <label className="check">
+            <input type="radio" name="entry" checked={value.kind === "scala"} onChange={() => set({ kind: "scala" })} /> Scala code
+          </label>
+        )}
         <label className="check">
           <input type="radio" name="entry" checked={value.kind === "jar"} disabled={!storage} onChange={() => set({ kind: "jar" })} /> JAR in
           Storage
@@ -357,6 +375,13 @@ function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onCh
       {value.kind === "python" ? (
         <Field label="PySpark code" hint="At most 256 KiB. It runs as you, in its own namespace.">
           <textarea className="code" rows={12} value={value.code} onChange={(e) => set({ code: e.target.value })} />
+        </Field>
+      ) : value.kind === "scala" ? (
+        <Field
+          label="Scala code"
+          hint="At most 256 KiB, Scala 2.13. Statements run in order, as in spark-shell: spark, sc, args and booth are defined, and the first that fails ends the run."
+        >
+          <textarea className="code" rows={12} value={value.scalaCode} onChange={(e) => set({ scalaCode: e.target.value })} />
         </Field>
       ) : (
         <>
@@ -388,6 +413,7 @@ export function NewApplicationPage({ me }: { me: Me }) {
   const [entry, setEntry] = useState<EntryChoice>({
     kind: "python",
     code: "from pyspark.sql import SparkSession\n\nspark = SparkSession.builder.getOrCreate()\nprint(spark.range(10).count())\n",
+    scalaCode: "// spark, sc, args and booth are already defined.\nprintln(spark.range(10).count())\n",
     backendId: "",
     path: "",
     mainClass: "",

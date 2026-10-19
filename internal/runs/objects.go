@@ -51,6 +51,10 @@ const (
 	localDir            = "/var/data/spark-local"
 	executorTemplateKey = "executor-template.yaml"
 	mainKey             = "main.py"
+	// scalaKey is an inline Scala application's code in the same ConfigMap.
+	scalaKey = "main.scala"
+	// ScalaRunnerJar is the runtime image's Scala runner (images/spark-runtime/scala-runner).
+	ScalaRunnerJar = "/opt/booth/booth-scala-runner.jar"
 )
 
 // Placement is a pod kind's scheduling settings, the plain Kubernetes names (docs/design-v0.md
@@ -189,7 +193,7 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 		return Objects{}, fmt.Errorf("run %s has data access but this install has none, or the run has no data bearer", r.ID)
 	}
 	// Every pod of a data run also holds its agent and credential sidecars.
-	driverMi := PodMemoryMi(v.DriverHeapMi) + v.SidecarMi()
+	driverMi := v.DriverPodMemoryMi() + v.SidecarMi()
 	execMi := PodMemoryMi(v.ExecutorHeapMi) + v.SidecarMi()
 	driverLimit := resource.MustParse(c.DriverCPU.Limit)
 	execLimit := resource.MustParse(c.ExecutorCPU.Limit)
@@ -243,6 +247,9 @@ func Build(r Run, c Cluster, api []APIEndpoint) (Objects, error) {
 		mainKey:             main,
 		executorTemplateKey: tmpl,
 	}}
+	if v.Main.InlineScala != "" {
+		o.AppConfigMap.Data[scalaKey] = v.Main.InlineScala
+	}
 	o.DriverService = &corev1.Service{ObjectMeta: meta(DriverService), Spec: corev1.ServiceSpec{
 		ClusterIP: corev1.ClusterIPNone,
 		Selector:  map[string]string{LabelRun: r.ID, LabelComponent: "driver"},
@@ -379,6 +386,10 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 			conf[k] = val
 		}
 	}
+	if v.Main.IsScala() {
+		// Client mode: spark-submit's launcher starts the driver JVM with these.
+		conf["spark.driver.extraJavaOptions"] = ScalaDriverJavaOptions
+	}
 	args := []string{"/opt/spark/bin/spark-submit",
 		"--master", master,
 		"--deploy-mode", "client",
@@ -390,6 +401,10 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		return append(args, runMountPath+"/"+mainKey)
 	case v.Main.Jar != nil:
 		args = append(args, "--class", v.Main.MainClass, MainFileName(v))
+	case v.Main.InlineScala != "":
+		args = append(args, "--class", "booth.runner.Script", ScalaRunnerJar, runMountPath+"/"+scalaKey)
+	case v.Main.Scala != nil:
+		args = append(args, "--class", "booth.runner.Script", ScalaRunnerJar, MainFileName(v))
 	case v.Main.Python != nil:
 		args = append(args, MainFileName(v))
 	default:

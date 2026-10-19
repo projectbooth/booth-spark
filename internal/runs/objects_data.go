@@ -121,16 +121,22 @@ func (p *DataPlan) locations() []dataLocation {
 
 // mainField names the run's booth-storage entry point as the API spells it.
 func mainField(v Validated) string {
-	if v.Main.Jar != nil {
+	switch {
+	case v.Main.Jar != nil:
 		return "main.jar"
+	case v.Main.Scala != nil:
+		return "main.scala"
 	}
 	return "main.python"
 }
 
 // MainFileName is where a run's booth-storage entry point lands in its driver.
 func MainFileName(v Validated) string {
-	if v.Main.Jar != nil {
+	switch {
+	case v.Main.Jar != nil:
 		return mainDir + "/app.jar"
+	case v.Main.Scala != nil:
+		return mainDir + "/main.scala"
 	}
 	return mainDir + "/main.py"
 }

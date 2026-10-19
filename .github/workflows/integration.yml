@@ -280,7 +280,8 @@ jobs:
             --set dataAccess.lakehouse.enabled=true --set dataAccess.storage.enabled=true \
             --set dataAccess.refreshMax=20s \
             --set dataAccess.objectStore.egress.podSelector.app=minio \
-            --set 'dataAccess.objectStore.egress.namespaceSelector.kubernetes\.io/metadata\.name=booth-minio'
+            --set 'dataAccess.objectStore.egress.namespaceSelector.kubernetes\.io/metadata\.name=booth-minio' \
+            --set runs.scala.enabled=true
           test/integration/deploy-data.sh booth-database booth-database:ci booth-storage booth-storage:ci booth-lakehouse booth-lakehouse:ci
 
       - name: Verify (including the REAL_CORE checks, with minting declared)

@@ -92,6 +92,13 @@ runs:
   # A run is stopped after this long, and fails if its driver hasn't started within pendingTimeout.
   maxDuration: 6h
   pendingTimeout: 10m
+  # Scala source as an application's entry point (main.inlineScala, main.scala; docs/design-scala.md,
+  # ADR 0121). Needs runs.image to carry the Scala runner (/opt/booth/booth-scala-runner.jar), which
+  # the runtime image has from booth-spark 0.4.0; the image pinned above predates it, so this stays
+  # off until the pin moves. A Scala driver gets at least 640Mi of overhead instead of 384Mi (1152Mi
+  # at the default 512m heap) and capped metaspace and code cache; Python and JAR runs are unchanged.
+  scala:
+    enabled: false
   driver:
     # Default heap (512m plus 384Mi overhead: an 896Mi pod).
     memory: 512m

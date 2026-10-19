@@ -74,6 +74,11 @@ type Runs struct {
 	Driver                 PodKind     `json:"driver"`
 	Executor               PodKind     `json:"executor"`
 	Egress                 runs.Egress `json:"egress"`
+	// Scala: whether runs may be Scala source (docs/design-scala.md; ADR 0121), which needs a runtime
+	// image carrying the Scala runner (/opt/booth/booth-scala-runner.jar).
+	Scala struct {
+		Enabled bool `json:"enabled"`
+	} `json:"scala"`
 
 	// Set from the chart's own names, not from runs values.
 	Instance                 string            `json:"-"`

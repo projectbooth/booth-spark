@@ -46,13 +46,26 @@ func TestStore_ClearContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	live, _ := s.Create(ctx, newRun(t, "acme", "u1"), "", roomy)
+	// An inline Scala application (ADR 0121): its code goes the same way.
+	scalaRun := newRun(t, "acme", "u1")
+	lim := testLimits()
+	lim.Scala = true
+	scalaSpec, err := Validate(Spec{Name: "scala", Main: Main{InlineScala: "println(1)"}}, lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalaRun.Spec = scalaSpec
+	scalaApp, _ := s.Create(ctx, scalaRun, "", roomy)
+	if err := s.Finish(ctx, scalaApp.ID, Succeeded, "", "an old Scala application's log", now.Add(-retention-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 
 	n, err := s.ClearContent(ctx, now.Add(-retention), now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n < 2 {
-		t.Errorf("cleared %d runs, want at least the old session and the old application", n)
+	if n < 3 {
+		t.Errorf("cleared %d runs, want at least the old session and the two old applications", n)
 	}
 
 	// Cleared: the old session's statement content, its log tail and runner bearer; the old
@@ -85,6 +98,14 @@ func TestStore_ClearContent(t *testing.T) {
 	sum := sha256.Sum256([]byte("print(1)"))
 	if a.Spec.Main.InlinePython != "" || a.Spec.Main.InlinePythonBytes != 8 || a.Spec.Main.InlinePythonSHA256 != hex.EncodeToString(sum[:]) {
 		t.Errorf("old application's main after clearing = %+v", a.Spec.Main)
+	}
+	scalaSum := sha256.Sum256([]byte("println(1)"))
+	if sa, _ := s.Get(ctx, scalaApp.ID); sa.ContentClearedAt == nil || sa.Spec.Main.InlineScala != "" ||
+		sa.Spec.Main.InlineScalaBytes != 10 || sa.Spec.Main.InlineScalaSHA256 != hex.EncodeToString(scalaSum[:]) {
+		t.Errorf("old Scala application's main after clearing = %+v", sa.Spec.Main)
+	}
+	if tail, _ := s.LogTail(ctx, scalaApp.ID); tail != "" {
+		t.Errorf("old Scala application's log tail kept: %q", tail)
 	}
 	if l, _ := s.Get(ctx, live.ID); l.Spec.Main.InlinePython != "print(1)" {
 		t.Errorf("a live run's code was cleared: %+v", l.Spec.Main)

@@ -66,7 +66,10 @@ type runView struct {
 type mainView struct {
 	InlinePythonBytes  int           `json:"inlinePythonBytes,omitempty"`
 	InlinePythonSHA256 string        `json:"inlinePythonSha256,omitempty"`
+	InlineScalaBytes   int           `json:"inlineScalaBytes,omitempty"`
+	InlineScalaSHA256  string        `json:"inlineScalaSha256,omitempty"`
 	Python             *runs.FileRef `json:"python,omitempty"`
+	Scala              *runs.FileRef `json:"scala,omitempty"`
 	Jar                *runs.FileRef `json:"jar,omitempty"`
 	MainClass          string        `json:"mainClass,omitempty"`
 }
@@ -104,7 +107,7 @@ func dview(r runs.Run) *dataView {
 func view(r runs.Run) runView {
 	m := r.Spec.Main
 	v := runView{Run: r, DataAccess: dview(r), Main: mainView{InlinePythonBytes: m.InlinePythonBytes, InlinePythonSHA256: m.InlinePythonSHA256,
-		Python: m.Python, Jar: m.Jar, MainClass: m.MainClass}}
+		InlineScalaBytes: m.InlineScalaBytes, InlineScalaSHA256: m.InlineScalaSHA256, Python: m.Python, Scala: m.Scala, Jar: m.Jar, MainClass: m.MainClass}}
 	v.Resources.DriverMemory = strconv.Itoa(r.Spec.DriverHeapMi) + "m"
 	v.Resources.ExecutorMemory = strconv.Itoa(r.Spec.ExecutorHeapMi) + "m"
 	v.Resources.MinExecutors = r.Spec.MinExecutors
@@ -155,7 +158,7 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 			return
 		}
 		var dataOwner, dataCeiling string
-		if id.Workload && (spec.DataAccess.Any() || spec.Main.Python != nil || spec.Main.Jar != nil) {
+		if id.Workload && (spec.DataAccess.Any() || spec.Main.File() != nil) {
 			// An entry point in booth-storage is read with the run's token too, so it counts as
 			// data access.
 			owner, why := workloadDataOwner(id)

@@ -64,16 +64,11 @@ var (
 // NeedsData reports whether a run needs data access to start: it asked for some, or its entry point
 // is a file in booth-storage.
 func (v Validated) NeedsData() bool {
-	return v.DataAccess.Any() || v.Main.Python != nil || v.Main.Jar != nil
+	return v.DataAccess.Any() || v.Main.File() != nil
 }
 
 // MainFile is the run's entry point in booth-storage, if it has one.
-func (v Validated) MainFile() *FileRef {
-	if v.Main.Python != nil {
-		return v.Main.Python
-	}
-	return v.Main.Jar
-}
+func (v Validated) MainFile() *FileRef { return v.Main.File() }
 
 // cleanStoragePath refuses anything but a plain relative path of named segments (booth-streamlit's
 // rule): a location can't climb out of the prefix it names.
@@ -112,38 +107,48 @@ func validateFileRef(field string, f *FileRef) error {
 	return nil
 }
 
-// validateMain checks the entry point: exactly one of inline Python, a Python file or a JAR (with
-// its main class) from booth-storage.
+// validateMain checks the entry point: exactly one of inline Python, inline Scala, a Python file,
+// a Scala file or a JAR (with its main class) from booth-storage.
 func validateMain(m Main, l Limits) error {
 	n := 0
-	for _, set := range []bool{strings.TrimSpace(m.InlinePython) != "", m.Python != nil, m.Jar != nil} {
+	for _, set := range []bool{strings.TrimSpace(m.InlinePython) != "", strings.TrimSpace(m.InlineScala) != "", m.Python != nil, m.Scala != nil, m.Jar != nil} {
 		if set {
 			n++
 		}
 	}
 	if n != 1 {
-		return invalid("main: exactly one of inlinePython, python or jar")
+		return invalid("main: exactly one of inlinePython, inlineScala, python, scala or jar")
 	}
-	if m.InlinePython != "" {
-		if len(m.InlinePython) > maxInlinePython {
-			return invalid("main.inlinePython is larger than %d KiB", maxInlinePython>>10)
+	if m.MainClass != "" && m.Jar == nil {
+		return invalid("main.mainClass goes with main.jar only")
+	}
+	if m.IsScala() && !l.Scala {
+		return Unavailable{"Scala isn't offered on this install (runs.scala.enabled, with a runtime image that carries the Scala runner)"}
+	}
+	for _, in := range []struct {
+		field, code string
+	}{{"inlinePython", m.InlinePython}, {"inlineScala", m.InlineScala}} {
+		if in.code != "" {
+			if len(in.code) > maxInlinePython {
+				return invalid("main.%s is larger than %d KiB", in.field, maxInlinePython>>10)
+			}
+			return nil
 		}
-		if m.MainClass != "" {
-			return invalid("main.mainClass goes with main.jar only")
-		}
-		return nil
 	}
 	if !l.Data.Storage {
-		return Unavailable{"main.python and main.jar read files from booth-storage, which this install doesn't offer (dataAccess.storage); use main.inlinePython"}
+		return Unavailable{"main.python, main.scala and main.jar read files from booth-storage, which this install doesn't offer (dataAccess.storage); use main.inlinePython or main.inlineScala"}
 	}
 	if m.Python != nil {
-		if m.MainClass != "" {
-			return invalid("main.mainClass goes with main.jar only")
-		}
 		if !strings.HasSuffix(m.Python.Path, ".py") {
 			return invalid("main.python.path must name a .py file")
 		}
 		return validateFileRef("main.python", m.Python)
+	}
+	if m.Scala != nil {
+		if !strings.HasSuffix(m.Scala.Path, ".scala") {
+			return invalid("main.scala.path must name a .scala file")
+		}
+		return validateFileRef("main.scala", m.Scala)
 	}
 	if !strings.HasSuffix(m.Jar.Path, ".jar") {
 		return invalid("main.jar.path must name a .jar file")
