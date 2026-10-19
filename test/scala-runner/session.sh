@@ -25,6 +25,7 @@ cleanup() { docker rm -f booth-sess-py booth-sess-scala >/dev/null 2>&1 || true;
 trap cleanup EXIT
 cleanup
 tokdir=$(mktemp -d)
+chmod 755 "$tokdir" # mktemp -d is 0700; the runners run as the image's spark user (uid 185)
 printf '%s' "$token" >"$tokdir/token"
 chmod 644 "$tokdir/token"
 tokmount=$tokdir
