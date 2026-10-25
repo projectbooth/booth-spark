@@ -1,6 +1,8 @@
 # Design note: hot clusters that clients attach to
 
-Status: a proposal, with no code. Written 2026-10-25 for the coordinator; it may become ADR 0125.
+Status: a proposal, with no code, recorded as ADR 0125 (proposed) in booth-architecture, awaiting
+the user's acceptance. Written 2026-10-25; revised the same day with the coordinator's rulings
+(section 11). Nothing is built until the user accepts ADR 0125 and the ADR 0122 chain is done.
 
 The user asked: "can we allow for hot clusters to be attached?" The coordinator takes that as the
 answer to the scope question in docs/design-clusters.md. Clusters become named objects of two modes:
@@ -23,7 +25,8 @@ The homelab already refuses a driver plus two 1 GiB executors. On it, a cold sta
 - **That sharing is safe only within one identity.** The starting position holds: one owner, one
   data lease, renewed exactly as a run's is today. It needs three additions: a ceiling check on
   attach, pipelines attaching only where the cluster's owner opted in, and no person attaching to a
-  service account's cluster (section 2).
+  service account's cluster. Service-account clusters themselves are deferred, so for now every
+  cluster is a person's, and only that person's own pipelines may attach (section 2's matrix).
 - **Clients attach through sessions and statements.** An attachment is a session whose `cluster`
   is the hot cluster, with its own SparkSession and Python namespace. Spark Connect stays deferred
   (section 3).
@@ -65,9 +68,9 @@ What each mode means:
 
 | Step | What happens |
 |---|---|
-| **Create** | records the cluster; starts nothing. Who may create: anyone at `submit.minRole` for their own cluster; a workspace owner for a service account's (section 2). |
+| **Create** | records the cluster; starts nothing. Who may create: anyone at `submit.minRole`, for their own cluster. Service-account clusters are deferred (ruling 4). |
 | **Start** | admits the instance against capacity (section 6), then launches it like a session. Starting is explicit (the page, `/v1`), or automatic when a pipeline task names a stopped cluster with `allowPipelines` (section 4). |
-| **Idle auto-stop** | idle means no attachment has a statement or job waiting or running, and nothing was submitted for `idleTimeout`. Default 20 min, as sessions (ADR 0110); a chart cap, `clusters.hot.maxIdleTimeout`, default 2 h. |
+| **Idle auto-stop** | idle means no attachment has a statement or job waiting or running, and nothing was submitted for `idleTimeout`. Default 20 min, as sessions (ADR 0110), and settable per cluster up to that cluster's maximum lifetime (ruling 1). |
 | **Maximum lifetime** | a hard stop even when busy, as sessions. Default and cap 12 h (ADR 0110). Raising the cap past 12 h needs a ruling. The page warns from 15 minutes before. A pipeline job is placed only on a cluster with at least the job's `maxDuration` left (section 4). |
 | **Stop** | by its owner, a workspace owner, or the module (idle, lifetime, lost access, or yielding, section 6). |
 | **Delete** | only when stopped. |
@@ -132,21 +135,38 @@ same way.
    Otherwise it would write with the owner's editor lease.
 2. **Data access is fixed at start.** A job asking for a storage location the cluster's plan
    doesn't hold can't attach. For a pipeline, it falls back to ephemeral (section 4).
-3. **Who counts as "that identity":**
+3. **Who counts as "that identity": the full matrix.** A pipeline run's identity is its
+   pipeline's owner, the core-signed `booth_owner` (ADR 0119), not whoever pressed "Run now". A
+   person's "Run now" of a pipeline owned by `svc:home:nfl` is an `svc:` run, as its scheduled runs
+   are. Below, P and Q are people and S is a service account in the same workspace. "Ephemeral"
+   means the task runs as today (or fails, if its task chose fail-instead; ruling 2).
 
-   | Cluster owner | May attach | May see and stop it |
+   | Who wants to attach | P's cluster | S's cluster (deferred, ruling 4) |
    |---|---|---|
-   | a person | that person's own token (the page, `/v1`); a notebook workload token whose core-signed `booth_owner` is that person (phase 3); a pipeline task whose `booth_owner` is that person, only if `allowPipelines` | the owner, the workspace owners |
-   | `svc:<ws>:<name>` | a pipeline task with core-signed `booth_module = pipeline` and `booth_owner = svc:<ws>:<name>`, only if `allowPipelines` | workspace owners |
+   | P, with their own token (the page, `/v1`) | **yes** | no |
+   | Q, any other person, workspace owners included | no (403) | no (403) |
+   | a notebook acting for P: `booth_module = notebooks`, `booth_owner = P` (phase 3) | **yes** | no |
+   | a notebook acting for Q | no (403) | no (403) |
+   | a pipeline run owned by P (`booth_owner = P`), scheduled or "Run now" (phase 2) | **yes**, if P's cluster has `allowPipelines` and the run's ceiling and data access fit; otherwise ephemeral | no: ephemeral |
+   | a pipeline run owned by S (`booth_owner = S`), scheduled or "Run now" | no: ephemeral | **until ruled: no, ephemeral.** If service-account clusters are later accepted: yes, if S's cluster has `allowPipelines` and the run fits |
+   | a pipeline run owned by Q | no: ephemeral | no: ephemeral |
+   | any other workload (another module, a run's own `spark:` token) | no (403) | no (403) |
+
+   Seeing and stopping: P's cluster, P and the workspace owners; S's cluster (when it exists), the
+   workspace owners. Every member sees that a cluster exists, its mode, state and owner (section 7).
+   So, until service-account clusters are ruled, `nfl-weekly-spark` and every other `svc:`-owned
+   pipeline stays ephemeral.
 
 4. **No person attaches to a service account's cluster, workspace owners included.** Otherwise a
    person's code would run under the account's lease, and core's audit would say the account did
    it, which is what ADR 0120 exists to stop. Workspace owners can see and stop it, and that's all.
-5. **Creating a service account's cluster** is for workspace owners only. That mirrors ADR 0120's
-   "only owners may assign a service account to a pipeline", enforced here because core doesn't
-   know who asked. booth-spark already names the owner in its mint request, and core checks that
-   owner's role and workspace. *To confirm with core:* that a `svc:` owner mint from booth-spark,
-   not only from booth-pipeline, is allowed under ADR 0120's mint rules.
+5. **Service-account clusters are deferred** (ruling 4). If they come later, creating one would be
+   for workspace owners only, mirroring ADR 0120's "only owners may assign a service account to a
+   pipeline", enforced here because core doesn't know who asked. booth-spark already names the
+   owner in its mint request, and core checks that owner's role and workspace. *Needs core and an
+   ADR 0120 check:* whether a `svc:` owner mint from booth-spark, at a workspace owner's request,
+   is allowed. Phases 1 to 3 don't need it: every cluster there is a person's, minted for a person
+   owner exactly as a person's run is today.
 
 ### Residuals
 
@@ -154,8 +174,8 @@ same way.
   the job or person that attached. booth-spark logs each attachment and job against the instance,
   so the trail exists, but in two places.
 - **A larger blast radius.** A refused mint now ends every attached client, not one run. For a
-  service account's cluster, disabling the account stops all its pipelines' attached tasks at
-  once. That is the point of disabling, but it's worth knowing.
+  service account's cluster (deferred), disabling the account would stop all its pipelines'
+  attached tasks at once. That is the point of disabling, but it's worth knowing.
 - **Copied S3 keys stay valid until their lease expires,** as today (ADR 0110 residual 2). A hot
   cluster doesn't lengthen any single lease, only the time over which leases are issued.
 
@@ -251,7 +271,8 @@ A **job** is a task attempt placed on a hot cluster. It is still an `application
    `<name>` was stopping"). If the fallback doesn't fit either, it's today's `429 at_capacity`, and
    the task waits it out as now.
 
-**Fallback is on by default for pipelines,** `fallback: none` to refuse instead. The task's
+**Fallback is on by default for pipelines** (ruling 2), with a per-task fail-instead,
+`fallback: fail`, for a task that must run on the cluster or not at all. The task's
 correctness never depends on warmth: a hot cluster only makes it faster.
 
 ### On a shared driver
@@ -383,7 +404,8 @@ None starts before the 28 Oct `nfl-weekly-spark` run is verified and the ADR 012
 | Phase | What | New Kubernetes rights | Core change |
 |---|---|---|---|
 | **1. Smallest useful slice** | `clusters` table and `/v1/clusters` (create, list, get, start, stop, delete); hot instances; person-owned only; Python only; `POST /v1/sessions {cluster}` with a SparkSession, globals and worker per attachment; idle auto-stop, lifetime, stale; hot caps and the idle-yield rule; the page's list and Attach | none (an instance is a run namespace) | none |
-| **2. Pipelines** | `cluster` and `fallback` on applications; jobs with per-job logs, job-group cancel and taint; the remaining-lifetime check; `allowPipelines`; service-account clusters created by workspace owners; named ephemeral clusters as saved settings; booth-pipeline's "Runs on" | none | confirm `svc:` owner mints from booth-spark (section 2) |
+| **2. Pipelines** | `cluster` and `fallback` on applications; jobs with per-job logs, job-group cancel and taint; the remaining-lifetime check; `allowPipelines`; pipelines attach only to their owner's own (person) cluster (section 2's matrix); named ephemeral clusters as saved settings; booth-pipeline's "Runs on" | none | none (person owners only) |
+| **Deferred** | service-account clusters, created by workspace owners, attachable by that account's pipelines | none | a core and ADR 0120 check (section 2, item 5) |
 | **3. Notebooks** | the ADR 0119-sibling rule for `booth_module = notebooks`; booth-notebooks' kernel client and magics; origin "Notebook" | none | booth-notebooks' `workloadIdentity.mint` entitlement in its manifest (configuration; confirm no code) |
 | **4. Optional, each its own decision** | warm-ahead-of-schedule starts from booth-pipeline; Scala hot clusters (one attachment); live executor counts on the page; Spark Connect | live executors: `list` on pods in run namespaces; Spark Connect: none here | Spark Connect: gRPC through core's gateway, a new ADR |
 
@@ -421,8 +443,9 @@ None starts before the 28 Oct `nfl-weekly-spark` run is verified and the ADR 012
    the driver's disk. Mitigation: fresh sessions per job, and the catalog-cache check in section 4.
 6. **Image skew during upgrades.** A job on a stale instance runs the old Spark. Mitigation: no new
    jobs on a stale instance, and the 12 h bound.
-7. **Disabling a service account** ends every task attached to its cluster at once. That is
-   intended, but its effect is wider than today's one run.
+7. **Disabling a service account** would end every task attached to its cluster at once, once
+   service-account clusters exist (deferred). The same holds for a person losing access: every
+   attachment to their cluster ends together.
 
 ## 10. What I would not do
 
@@ -438,12 +461,21 @@ None starts before the 28 Oct `nfl-weekly-spark` run is verified and the ADR 012
 - **Pools, or resizing from the page** (deferred by the coordinator).
 - **Letting an attachment add data access** beyond what the cluster's plan holds.
 
-## 11. Questions for the coordinator
+## 11. Rulings (coordinator, 2026-10-25) and what is still open
 
-1. **The idle default for hot clusters:** keep ADR 0110's 20 minutes, or something longer? Longer
-   means more memory held, and fewer yields to pipelines.
-2. **Pipeline fallback to ephemeral on by default** (section 4): agree?
-3. **Core:** may booth-spark mint for a `svc:` owner on a workspace owner's request? And is
-   booth-notebooks' minting entitlement configuration only?
-4. **Is a statement-proxy client enough for notebooks** in phase 3, knowing it isn't a PySpark
-   `SparkSession`? If not, Spark Connect becomes the question, and it's a bigger one.
+1. **Idle:** default 20 minutes, settable per cluster up to its maximum lifetime (section 1).
+2. **Pipelines fall back to ephemeral by default,** with a per-task fail-instead (section 4).
+3. **Notebooks get the statement-based client first;** Spark Connect stays deferred (sections 3
+   and 5).
+4. **Service-account clusters are deferred** pending a core and ADR 0120 check. Until then a
+   pipeline attaches only when its run's identity is the cluster's owner, so `svc:`-owned
+   scheduled runs stay ephemeral (section 2's matrix).
+5. **No code** until the user accepts ADR 0125 and the ADR 0122 chain is done. Pools and resizing
+   stay unbuilt.
+
+Still open:
+
+1. The core check in ruling 4, if service-account clusters are wanted.
+2. Whether booth-notebooks' minting entitlement is configuration only (phase 3).
+3. Whether the statement client is enough for notebooks once phase 3 is in use, or the Spark
+   Connect question has to be asked.
