@@ -316,6 +316,7 @@ The interface is served on the ordinary gateway route `/modules/spark/v1/…` (b
 | `POST /v1/sessions`, `GET`, `POST …/stop` | the same resource and data-access body; `idleTimeout` |
 | `POST /v1/sessions/{id}/statements` `{kind: sql \| python, code}`, `GET …/statements/{sid}` | runs in the session's SparkSession; results capped at 1,000 rows or 1 MiB, JSON |
 | `GET /v1/limits` | what this caller may request, so a client doesn't guess |
+| `GET /v1/cluster` | (added 2026-10-25, below) what runs share on this install, and how much of it is in use; read-only |
 
 **Sessions in v0.** A session is a long-lived driver running a module-owned PySpark session
 runner. It listens on the pod IP and accepts statements only from the backend, with the per-run
@@ -924,3 +925,38 @@ reported "booth-spark is not installed".
   - Two changes already recorded under step 3 and step 4: the OpenAPI document is
     `internal/api/openapi/v1.yaml`, served at `/v1/openapi.yaml`; a session stops with
     `DELETE /v1/sessions/{id}`.
+
+## As built: the page explained, run origin and `GET /v1/cluster`, 2026-10-25
+
+People couldn't tell from the page what an application or a session is, and asked where Spark's
+cluster is. The page now says so, and shows what is running and on what. Nothing in it changes
+anything; managing clusters is a separate question (docs/design-clusters.md).
+
+- **The page:** an explainer (what each is, who starts it, how long it lives, who sees it, and how
+  pipelines and notebooks relate), the same words as hints beside the headings and column heads (a
+  `title` attribute until booth-design's shared tooltip lands; one component, `Hint`), and owner,
+  origin and start time on every run.
+- **`origin` on every run and session:** `person`; `pipeline`, with `pipelineRun`, `task` and
+  `attempt`; or `workload`, with its subject's kind. It's derived from what was already recorded at
+  submit, so it's right for every run, old ones included:
+  - A run is `pipeline` only when it has a data owner. Only then did core's signed `booth_module`
+    claim name the pipeline module; a `pipeline:` subject alone proves nothing (ADR 0119).
+  - The task and attempt come from the `Idempotency-Key` booth-pipeline sends,
+    `<run>/<taskKey>/<attempt>`, and only when it names the subject's own run.
+  - A pipeline's run without data access shows as a `pipeline` workload, without its task.
+- **`GET /v1/cluster`:** there is no standing Spark cluster. Each run gets its own driver pod, which
+  asks Kubernetes for its executors in the run's namespace, and both end with the run. So this shows
+  what runs share instead:
+  - the master, which is Kubernetes;
+  - a driver's and an executor's shape: default heap, CPU request and limit, cores per executor, and
+    the most executors per run;
+  - the admission bounds (`runs.maxRunning`, `runs.maxRunningPerWorkspace`, `runs.memoryBudget`),
+    and how much of them the pending and running runs hold, on the install and in this workspace.
+  Any role in the workspace may read it, as `/v1/limits`. Other workspaces' runs are only counted,
+  which a `429 at_capacity` already tells a submitter. The page lists what runs on it from the
+  applications and sessions lists, so their visibility rules hold, and counts the sessions it can't
+  show.
+- **No new Kubernetes rights.** Showing nodes would need cluster-wide `get`/`list` on `nodes`.
+  Showing how many executors a run holds right now would need `list` on pods in its namespace: the
+  run controller has only `create` and `get` there. The page shows each run's configured range
+  instead (docs/design-clusters.md, section 4).

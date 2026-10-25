@@ -319,6 +319,9 @@ func executorTemplate(r Run, c Cluster, labels map[string]string) (string, error
 	return string(out), err
 }
 
+// ExecutorCores is spark.executor.cores: each executor runs one task at a time.
+const ExecutorCores = 1
+
 // DriverArgs is the driver container's command: Spark's own spark-submit in client mode, with
 // every setting that makes the run isolated and bounded fixed by the module (docs/design-v0.md
 // items 1, 3, 5 and 7), then the caller's allowlisted conf, then the application.
@@ -343,7 +346,7 @@ func DriverArgs(r Run, c Cluster, api APIEndpoint) []string {
 		"spark.kubernetes.executor.deleteOnTermination":             "true",
 		"spark.kubernetes.executor.request.cores":                   c.ExecutorCPU.Request,
 		"spark.kubernetes.executor.limit.cores":                     c.ExecutorCPU.Limit,
-		"spark.executor.cores":                                      "1",
+		"spark.executor.cores":                                      strconv.Itoa(ExecutorCores),
 		"spark.executor.memory":                                     strconv.Itoa(v.ExecutorHeapMi) + "m",
 		"spark.driver.memory":                                       strconv.Itoa(v.DriverHeapMi) + "m",
 		"spark.dynamicAllocation.enabled":                           "true",

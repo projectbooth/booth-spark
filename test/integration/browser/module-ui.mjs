@@ -91,6 +91,16 @@ try {
   check(true, "the viewer sees the editor's run listed");
   check((await vw.ui.getByRole("button", { name: "New application" }).count()) === 0, "the viewer has no way to submit");
   check((await vw.ui.getByText(/needs editor or above/).count()) === 1, "... and is told why");
+  const row = vw.ui.getByRole("row").filter({ has: vw.ui.getByRole("link", { name: runName }) }).first();
+  check((await row.getByText("editor-user").count()) === 1 && (await row.getByText("A person").count()) === 1,
+    "the run's row names its owner and its origin");
+  await vw.ui.getByText("What are applications, sessions and clusters?").click();
+  await vw.ui.getByText(/runs once, start to finish/).first().waitFor({ timeout: 10_000 });
+  check(true, "the explainer opens and says what an application is");
+  const clusters = vw.ui.locator("section").filter({ has: vw.ui.getByRole("heading", { name: "Clusters", exact: true }) });
+  await clusters.getByText("Kubernetes", { exact: true }).waitFor({ timeout: 30_000 });
+  check((await clusters.getByText(/of at most \d+ on this install/).count()) === 1, "the Clusters section reads the install's capacity through core");
+  check((await clusters.getByRole("button").count()) === 0, "... read-only");
   await vw.ui.getByRole("link", { name: runName }).click();
   await vw.ui.getByText("Its submitter, the workspace's owners and platform operators can read its log.").waitFor({ timeout: 30_000 });
   check(true, "the viewer gets the run's state, not its log");

@@ -40,10 +40,12 @@ type sessionView struct {
 	UIPath string `json:"uiPath,omitempty"`
 	// DataAccess is what the session asked for and, once it launched, what it got.
 	DataAccess *dataView `json:"dataAccess,omitempty"`
+	// Origin is what started the session (originView).
+	Origin originView `json:"origin"`
 }
 
 func sview(r runs.Run) sessionView {
-	v := sessionView{Run: r, DataAccess: dview(r)}
+	v := sessionView{Run: r, DataAccess: dview(r), Origin: origin(r)}
 	v.Resources.DriverMemory = strconv.Itoa(r.Spec.DriverHeapMi) + "m"
 	v.Resources.ExecutorMemory = strconv.Itoa(r.Spec.ExecutorHeapMi) + "m"
 	v.Resources.MinExecutors = r.Spec.MinExecutors
