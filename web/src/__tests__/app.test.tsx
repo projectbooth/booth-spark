@@ -94,11 +94,121 @@ describe("the runs page", () => {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: viewer };
       if (url === "ui/api/applications") return { json: { applications: [] } };
-      return { json: { sessions: [] } };
+      if (url === "ui/api/sessions") return { json: { sessions: [] } };
+      if (url === "ui/api/cluster") return { json: cluster };
+      return { status: 404, json: { error: "not found" } };
     });
     render(<App />);
     expect(await screen.findByText(/needs editor or above/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New application" })).toBeNull();
+  });
+});
+
+const cluster = {
+  master: "kubernetes",
+  driver: { defaultMemory: "512m", cpuRequest: "250m", cpuLimit: "2" },
+  executor: { defaultMemory: "512m", cpuRequest: "500m", cpuLimit: "1", cores: 1, maxPerRun: 2 },
+  capacity: {
+    maxRunning: 10,
+    liveRuns: 5,
+    maxRunningPerWorkspace: 4,
+    liveRunsInWorkspace: 3,
+    memoryBudgetMi: 24576,
+    memoryInUseMi: 9600,
+    memoryInUseInWorkspaceMi: 5376,
+  },
+};
+
+describe("the runs page, explained", () => {
+  const pipelineRun = run({
+    id: "r2",
+    name: "weekly",
+    submitter: "pipeline:acme:p8",
+    submitterName: "",
+    workload: true,
+    uiPath: undefined,
+    dataOwner: "svc:acme:nightly",
+    startedAt: "2026-10-10T10:01:00Z",
+    origin: { kind: "pipeline", pipelineRun: "p8", task: "load_games", attempt: "2" },
+  });
+  const mine = run({ origin: { kind: "person" }, state: "pending" });
+  const session = run({ id: "s1", kind: "session", name: "explore", origin: { kind: "person" }, startedAt: "2026-10-10T10:02:00Z" });
+
+  function page() {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (url === "ui/api/applications") return { json: { applications: [pipelineRun, mine] } };
+      if (url === "ui/api/sessions") return { json: { sessions: [session] } };
+      if (url === "ui/api/cluster") return { json: cluster };
+      return { status: 404, json: { error: "not found" } };
+    });
+    render(<App />);
+  }
+
+  it("says what applications and sessions are, on the page and on hover", async () => {
+    page();
+    const panel = (await screen.findByText("What are applications, sessions and clusters?")).closest("details")!;
+    expect(within(panel).getByText(/runs once, start to finish/)).toBeInTheDocument();
+    expect(within(panel).getByText(/like a notebook kernel with Spark behind it/)).toBeInTheDocument();
+    // The install's limits, as people say them.
+    expect(within(panel).getByText(/at most 6h/)).toBeInTheDocument();
+    expect(within(panel).getByText(/for 20m/)).toBeInTheDocument();
+    expect(within(panel).getByText(/A pipeline task that uses Spark starts an/)).toBeInTheDocument();
+    // The same words as a tooltip on each heading, reachable by keyboard.
+    const hint = screen.getByRole("img", { name: /An application is a Spark program that runs once/ });
+    expect(hint).toHaveAttribute("title", expect.stringMatching(/runs once, start to finish/));
+    expect(hint).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("img", { name: /A session is a Spark program that stays up/ })).toBeInTheDocument();
+  });
+
+  it("shows each run's owner, origin and start", async () => {
+    page();
+    const row = (await screen.findAllByRole("link", { name: "weekly" }))[0].closest("tr")!;
+    // A pipeline's run belongs to the pipeline's owner, and names its task.
+    expect(within(row).getByText("svc:acme:nightly")).toBeInTheDocument();
+    expect(within(row).getByText("load_games")).toBeInTheDocument();
+    expect(within(row).getByText(/Pipeline task/)).toBeInTheDocument();
+    expect(within(row).getByText(/attempt 2/)).toBeInTheDocument();
+    expect(within(row).getByText(new Date("2026-10-10T10:01:00Z").toLocaleString())).toBeInTheDocument();
+    const mineRow = screen.getAllByRole("link", { name: "pi" })[0].closest("tr")!;
+    expect(within(mineRow).getByText("editor-user")).toBeInTheDocument();
+    expect(within(mineRow).getByText("A person")).toBeInTheDocument();
+    expect(within(mineRow).getByText(/^waiting since /)).toBeInTheDocument();
+  });
+
+  it("shows the cluster read-only: master, workers, capacity and what runs on it", async () => {
+    page();
+    const section = (await screen.findByRole("heading", { level: 2, name: "Clusters" })).closest("section")!;
+    await within(section).findByText("Kubernetes");
+    expect(within(section).getByText(/1 core each \(CPU 500m requested, 1 at most\)/)).toBeInTheDocument();
+    expect(within(section).getByText(/5 running or waiting, of at most 10 on this install; 3 in this workspace/)).toBeInTheDocument();
+    expect(within(section).getByText(/\(at most 4\)/)).toBeInTheDocument();
+    // Three live here, and this person sees all three; two elsewhere, only counted.
+    expect(within(section).queryByText(/other people's sessions/)).toBeNull();
+    expect(within(section).getByText(/2 in other workspaces/)).toBeInTheDocument();
+    expect(within(section).getByText(/9.4 GiB of 24 GiB held by running runs \(5.3 GiB by this workspace's\)/)).toBeInTheDocument();
+    expect(within(section).getByRole("meter", { name: "Memory in use" })).toHaveAttribute("value", "9600");
+    // The live runs this person can see, with what each holds.
+    const table = within(section).getByRole("table");
+    expect(within(table).getByRole("link", { name: "weekly" })).toHaveAttribute("href", "#/applications/r2");
+    expect(within(table).getByRole("link", { name: "explore" })).toHaveAttribute("href", "#/sessions/s1");
+    expect(within(table).getAllByText("0–2 × 512m")).toHaveLength(3);
+    // Nothing on it changes anything.
+    expect(within(section).queryByRole("button")).toBeNull();
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+  });
+
+  it("counts the live sessions it can't show", async () => {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (url === "ui/api/applications") return { json: { applications: [] } };
+      if (url === "ui/api/sessions") return { json: { sessions: [] } };
+      if (url === "ui/api/cluster") return { json: { ...cluster, capacity: { ...cluster.capacity, liveRuns: 2, liveRunsInWorkspace: 2 } } };
+      return { status: 404, json: { error: "not found" } };
+    });
+    render(<App />);
+    expect(await screen.findByText(/2 in this workspace are other people's sessions/)).toBeInTheDocument();
+    expect(screen.getByText("Nothing you can see is running in this workspace.")).toBeInTheDocument();
   });
 });
 

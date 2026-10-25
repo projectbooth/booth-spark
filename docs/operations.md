@@ -68,7 +68,8 @@ access, every pod of a run also holds its agent (32Mi) and one 64Mi credential s
 
 The backend admits a run only if its largest footprint (driver, every executor it may scale to, and
 their sidecars) fits beside every live run's in `runs.memoryBudget`, and only within
-`runs.maxRunning`. A refused submission is `429 at_capacity`, with the numbers. Each run namespace
+`runs.maxRunning`. A refused submission is `429 at_capacity`, with the numbers. The page's Clusters
+section, and `GET /v1/cluster`, show these bounds and how much of them the live runs hold. Each run namespace
 also has a ResourceQuota of its footprint plus 512Mi and one pod of slack, and a LimitRange.
 
 Executors leave after 60 seconds idle (dynamic allocation), so an idle session holds only its
@@ -167,6 +168,7 @@ the driver exits.
 | | Viewer | Editor | Owner | Platform operator |
 |---|---|---|---|---|
 | See the workspace's applications | yes | yes | yes | as their role |
+| See the cluster's capacity (`GET /v1/cluster`) | yes | yes | yes | as their role |
 | Submit, start a session (`submit.minRole`) | no | yes | yes | as their role |
 | Stop an application, read its log | no | their own | any | any |
 | See a session, read its log | no | their own | any | no |

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -28,6 +29,7 @@ type RunStore interface {
 	AddStatement(ctx context.Context, runID, kind, code string, maxOpen int) (runs.Statement, error)
 	Statements(ctx context.Context, runID string) ([]runs.Statement, error)
 	GetStatement(ctx context.Context, runID, id string) (runs.Statement, error)
+	Usage(ctx context.Context, workspace string) (runs.Usage, error)
 }
 
 // Applications is the /v1 job-submission API's configuration (docs/design-v0.md item 6).
@@ -35,6 +37,9 @@ type Applications struct {
 	Store     RunStore
 	Limits    runs.Limits
 	Admission runs.Admission
+	// DriverCPU and ExecutorCPU are each pod's CPU request and limit (runs.driver.cpu,
+	// runs.executor.cpu), shown by GET /v1/cluster.
+	DriverCPU, ExecutorCPU runs.CPU
 	// LiveLogs reads the last lines of a live run's driver log.
 	LiveLogs func(ctx context.Context, ns string, tailLines int64) (string, error)
 	// LiveLogFrom reads a live run's driver log from a byte offset, at most max bytes, and says how
@@ -60,6 +65,44 @@ type runView struct {
 	// Main is the run's entry point without its code: the inline Python's length and SHA-256, or
 	// the file in booth-storage.
 	Main mainView `json:"main"`
+	// Origin is what started the run.
+	Origin originView `json:"origin"`
+}
+
+// originView is what started a run, from what booth-spark already records at submit:
+//   - "person": someone's own token, through this module's page or /v1;
+//   - "pipeline": a pipeline task (ADR 0119). Only for a run whose data owner was set, which needs
+//     core's signed booth_module claim to name the pipeline module; the subject's prefix alone
+//     proves nothing. PipelineRun is from its subject, pipeline:<workspace>:<run>, and Task and
+//     Attempt from the Idempotency-Key booth-pipeline sends, <run>/<taskKey>/<attempt>, when that
+//     key starts with the same run;
+//   - "workload": any other workload token, Workload being its subject's kind (the part before
+//     the first colon), as the minting module chose it.
+type originView struct {
+	Kind        string `json:"kind"`
+	Workload    string `json:"workload,omitempty"`
+	PipelineRun string `json:"pipelineRun,omitempty"`
+	Task        string `json:"task,omitempty"`
+	Attempt     string `json:"attempt,omitempty"`
+}
+
+func origin(r runs.Run) originView {
+	switch {
+	case !r.Workload:
+		return originView{Kind: "person"}
+	case r.DataOwner == "" || auth.WorkloadKind(r.Submitter) != "pipeline":
+		return originView{Kind: "workload", Workload: auth.WorkloadKind(r.Submitter)}
+	}
+	o := originView{Kind: "pipeline"}
+	if parts := strings.SplitN(r.Submitter, ":", 3); len(parts) == 3 {
+		o.PipelineRun = parts[2]
+	}
+	if rest, ok := strings.CutPrefix(r.IdempotencyKey, o.PipelineRun+"/"); ok && o.PipelineRun != "" {
+		if i := strings.LastIndex(rest, "/"); i > 0 {
+			o.Task, o.Attempt = rest[:i], rest[i+1:]
+		}
+	}
+	return o
 }
 
 // mainView is an entry point as /v1 shows it. The inline code itself is never shown.
@@ -107,7 +150,8 @@ func dview(r runs.Run) *dataView {
 func view(r runs.Run) runView {
 	m := r.Spec.Main
 	v := runView{Run: r, DataAccess: dview(r), Main: mainView{InlinePythonBytes: m.InlinePythonBytes, InlinePythonSHA256: m.InlinePythonSHA256,
-		InlineScalaBytes: m.InlineScalaBytes, InlineScalaSHA256: m.InlineScalaSHA256, Python: m.Python, Scala: m.Scala, Jar: m.Jar, MainClass: m.MainClass}}
+		InlineScalaBytes: m.InlineScalaBytes, InlineScalaSHA256: m.InlineScalaSHA256, Python: m.Python, Scala: m.Scala, Jar: m.Jar, MainClass: m.MainClass},
+		Origin: origin(r)}
 	v.Resources.DriverMemory = strconv.Itoa(r.Spec.DriverHeapMi) + "m"
 	v.Resources.ExecutorMemory = strconv.Itoa(r.Spec.ExecutorHeapMi) + "m"
 	v.Resources.MinExecutors = r.Spec.MinExecutors
@@ -135,6 +179,7 @@ func (a Applications) routes(r chi.Router, minRole auth.Role) {
 	r.Get("/applications/{id}", a.get)
 	r.Post("/applications/{id}/stop", a.stop)
 	r.Get("/applications/{id}/logs", a.logs)
+	r.Get("/cluster", a.cluster)
 	a.sessionRoutes(r, minRole)
 }
 

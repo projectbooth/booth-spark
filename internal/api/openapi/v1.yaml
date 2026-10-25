@@ -48,6 +48,8 @@ tags:
     description: Batch Spark applications, one namespace per run
   - name: sessions
     description: Long-lived Spark sessions that take statements, one namespace each; stopped when idle
+  - name: cluster
+    description: What runs share on this install, read-only
 paths:
   /me:
     get:
@@ -84,6 +86,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Limits"
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /cluster:
+    get:
+      tags: [cluster]
+      operationId: getCluster
+      summary: What Spark runs on in this install, and how much of it the live runs hold
+      description: |
+        Read-only. There is no standing Spark cluster: each run gets its own driver pod, which asks
+        Kubernetes for its executors in the run's own namespace, and both end with the run. What
+        runs share is the install's admission bounds (runs.maxRunning, runs.maxRunningPerWorkspace,
+        runs.memoryBudget): this shows them, what the pending and running runs hold of them on the
+        whole install and in this workspace, and the shape of a run's pods. Which runs are live is
+        `GET /applications` and `GET /sessions`, with their own visibility; other workspaces' runs
+        are only counted. Any caller with a role in the workspace gets 200.
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+      responses:
+        "200":
+          description: The cluster
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -512,6 +539,49 @@ components:
           type: array
           items: {type: string, enum: [inlinePython, inlineScala, python, scala, jar]}
           description: The main fields an application may use (the file ones only with booth-storage)
+    PodShape:
+      type: object
+      required: [defaultMemory, cpuRequest, cpuLimit]
+      properties:
+        defaultMemory: {type: string, description: "The heap when a run asks for none (e.g. 512m)"}
+        cpuRequest: {type: string, description: "The pod's CPU request (Kubernetes quantity)"}
+        cpuLimit: {type: string, description: "The pod's CPU limit (Kubernetes quantity)"}
+        cores: {type: integer, description: "Executors only: Spark's task slots per executor (spark.executor.cores)"}
+        maxPerRun: {type: integer, description: "Executors only: the most one run may scale to"}
+    Cluster:
+      type: object
+      required: [master, driver, executor, capacity]
+      properties:
+        master: {type: string, enum: [kubernetes], description: "Spark's cluster manager"}
+        driver: {$ref: "#/components/schemas/PodShape"}
+        executor: {$ref: "#/components/schemas/PodShape"}
+        capacity:
+          type: object
+          required: [maxRunning, liveRuns, maxRunningPerWorkspace, liveRunsInWorkspace, memoryBudgetMi, memoryInUseMi, memoryInUseInWorkspaceMi]
+          properties:
+            maxRunning: {type: integer, description: "The most pending or running runs on the install (runs.maxRunning)"}
+            liveRuns: {type: integer, description: "Pending or running runs on the install, every workspace's"}
+            maxRunningPerWorkspace: {type: integer, description: "The most in one workspace (runs.maxRunningPerWorkspace); 0 for no cap"}
+            liveRunsInWorkspace: {type: integer, description: "Pending or running runs in this workspace, sessions the caller can't see included"}
+            memoryBudgetMi: {type: integer, description: "The memory all live runs' pods may hold at once, MiB (runs.memoryBudget)"}
+            memoryInUseMi: {type: integer, description: "What the live runs hold of it: the sum of their footprintMi"}
+            memoryInUseInWorkspaceMi: {type: integer, description: "The same, for this workspace's runs"}
+    Origin:
+      type: object
+      description: |
+        What started the run, from what booth-spark records at submit. `person`: someone's own
+        token, through the module's page or this API. `pipeline`: a pipeline task (ADR 0119), only
+        for a run with a data owner, so core's signed booth_module claim named the pipeline module;
+        `pipelineRun` is from its subject, and `task` and `attempt` from the Idempotency-Key
+        booth-pipeline sends (`<run>/<taskKey>/<attempt>`) when it names the same run. `workload`:
+        any other workload token, `workload` being its subject's kind as the minting module chose it.
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [person, pipeline, workload]}
+        workload: {type: string}
+        pipelineRun: {type: string}
+        task: {type: string}
+        attempt: {type: string}
     State:
       type: string
       enum: [pending, running, succeeded, failed, stopped]
@@ -654,7 +724,7 @@ components:
       description: A JVM heap in Spark's notation, between 512m and runs.maxMemory
     Run:
       type: object
-      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources]
+      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources, origin]
       properties:
         id: {type: string}
         kind: {type: string, enum: [application]}
@@ -691,6 +761,7 @@ components:
           enum: [editor, viewer]
           description: "For a run a pipeline submitted: its token's role ceiling, the lesser of editor and the submitting token's role, fixed at submit"
         dataAccess: {$ref: "#/components/schemas/DataView"}
+        origin: {$ref: "#/components/schemas/Origin"}
         main:
           type: object
           description: The run's entry point without its code
@@ -749,8 +820,9 @@ components:
             both.
     Session:
       type: object
-      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources, idleTimeout, maxLifetime, language]
+      required: [id, kind, workspace, submitter, workload, name, state, stopRequested, createdAt, footprintMi, resources, idleTimeout, maxLifetime, language, origin]
       properties:
+        origin: {$ref: "#/components/schemas/Origin"}
         id: {type: string}
         kind: {type: string, enum: [session]}
         workspace: {type: string}

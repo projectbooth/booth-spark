@@ -50,6 +50,43 @@ export interface DataView {
   storageRoots?: string[];
 }
 
+/**
+ * What started a run (the API's Origin): a person's own token; a pipeline task (ADR 0119), with its
+ * pipeline run, task and attempt when booth-pipeline's Idempotency-Key names them; or another
+ * module's workload, by its subject's kind.
+ */
+export interface Origin {
+  kind: "person" | "pipeline" | "workload";
+  workload?: string;
+  pipelineRun?: string;
+  task?: string;
+  attempt?: string;
+}
+
+/** GET /v1/cluster: what Spark runs on in this install, and how much of it the live runs hold. */
+export interface Cluster {
+  master: string;
+  driver: PodShape;
+  executor: PodShape;
+  capacity: {
+    maxRunning: number;
+    liveRuns: number;
+    maxRunningPerWorkspace: number;
+    liveRunsInWorkspace: number;
+    memoryBudgetMi: number;
+    memoryInUseMi: number;
+    memoryInUseInWorkspaceMi: number;
+  };
+}
+
+export interface PodShape {
+  defaultMemory: string;
+  cpuRequest: string;
+  cpuLimit: string;
+  cores?: number;
+  maxPerRun?: number;
+}
+
 export interface Run {
   id: string;
   kind: "application" | "session";
@@ -78,6 +115,8 @@ export interface Run {
   dataOwner?: string;
   dataCeiling?: "editor" | "viewer";
   dataAccess?: DataView;
+  /** Absent from an older backend. */
+  origin?: Origin;
   main?: {
     inlinePythonBytes?: number;
     inlinePythonSha256?: string;
@@ -164,6 +203,7 @@ export const api = {
   submit: (spec: unknown) => call<Run>("POST", "applications", spec),
   stop: (id: string) => call<Run>("POST", "applications/" + enc(id) + "/stop"),
   logs: (id: string) => call<string>("GET", "applications/" + enc(id) + "/logs?tail=2000"),
+  cluster: () => call<Cluster>("GET", "cluster"),
   sessions: () => call<{ sessions: Run[] }>("GET", "sessions").then((r) => r.sessions ?? []),
   session: (id: string) => call<Run>("GET", "sessions/" + enc(id)),
   startSession: (spec: unknown) => call<Run>("POST", "sessions", spec),

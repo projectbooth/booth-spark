@@ -68,6 +68,9 @@ type Run struct {
 	// capped at editor (DataOwnerID, DataRoleCeiling).
 	DataOwner   string `json:"dataOwner,omitempty"`
 	DataCeiling string `json:"dataCeiling,omitempty"`
+	// IdempotencyKey is the submitter's Idempotency-Key, if it sent one. Never shown as is; a
+	// pipeline's (<runId>/<taskKey>/<attempt>) names the task that submitted the run (Origin).
+	IdempotencyKey string `json:"-"`
 }
 
 // DataOwnerID is whom the run reads and writes data as: DataOwner, else its submitter.
@@ -167,14 +170,14 @@ func NewID() string {
 
 const runColumns = `id, kind, workspace, submitter, submitter_name, workload, name, state, reason, namespace,
 	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token,
-	content_cleared_at, data_bearer, data, data_owner, data_ceiling`
+	content_cleared_at, data_bearer, data, data_owner, data_ceiling, coalesce(idempotency_key, '')`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var r Run
 	var spec, data []byte
 	err := row.Scan(&r.ID, &r.Kind, &r.Workspace, &r.Submitter, &r.SubmitterName, &r.Workload, &r.Name, &r.State,
 		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched,
-		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data, &r.DataOwner, &r.DataCeiling)
+		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data, &r.DataOwner, &r.DataCeiling, &r.IdempotencyKey)
 	if err != nil {
 		return r, err
 	}
@@ -260,6 +263,23 @@ func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 // List returns a workspace's runs of one kind ("application" or "session"), newest first.
 func (s *Store) List(ctx context.Context, workspace, kind string, limit int) ([]Run, error) {
 	return s.query(ctx, `SELECT `+runColumns+` FROM runs WHERE workspace = $1 AND kind = $2 ORDER BY created_at DESC, id LIMIT $3`, workspace, kind, limit)
+}
+
+// Usage is what the live runs hold of the install's admission bounds (Admission): runs and memory,
+// on the whole install and in one workspace.
+type Usage struct {
+	Live, LiveHere     int
+	UsedMi, UsedHereMi int
+}
+
+// Usage counts the pending and running runs, as Create's admission does, install-wide and in
+// workspace.
+func (s *Store) Usage(ctx context.Context, workspace string) (Usage, error) {
+	var u Usage
+	err := s.db.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE workspace = $1),
+		coalesce(sum(footprint_mi), 0), coalesce(sum(footprint_mi) FILTER (WHERE workspace = $1), 0)
+		FROM runs WHERE state IN ('pending', 'running')`, workspace).Scan(&u.Live, &u.LiveHere, &u.UsedMi, &u.UsedHereMi)
+	return u, err
 }
 
 // Live returns every pending or running run.

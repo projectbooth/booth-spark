@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { api, live, type Me, type Run, type StorageLocation } from "./api";
-import { Badge, ErrorBox, Field, Pre, when } from "./components";
+import { Badge, ErrorBox, Field, Hint, Pre, when } from "./components";
 import { go, useLoad } from "./hooks";
+import { ClusterSection, Explainer, OriginLabel, explain, ownerOf, startOf } from "./overview";
 
 const anyLive = (rs: Run[]) => rs.some((r) => live(r.state));
 
@@ -11,9 +12,13 @@ export function RunsPage({ me }: { me: Me }) {
   const sessions = useLoad(api.sessions, [], 5000, anyLive);
   return (
     <>
+      <Explainer me={me} />
       <section>
         <div className="section-head">
-          <h2>Applications</h2>
+          <div className="title">
+            <h2>Applications</h2>
+            <Hint text={explain.application} />
+          </div>
           {me.canSubmit && (
             <button type="button" onClick={() => go("new")}>
               New application
@@ -25,7 +30,10 @@ export function RunsPage({ me }: { me: Me }) {
       </section>
       <section>
         <div className="section-head">
-          <h2>Sessions</h2>
+          <div className="title">
+            <h2>Sessions</h2>
+            <Hint text={explain.session} />
+          </div>
           {me.canSubmit && (
             <button type="button" onClick={() => go("new-session")}>
               New session
@@ -41,6 +49,7 @@ export function RunsPage({ me }: { me: Me }) {
           Your role can see runs but not submit them: that needs {me.submitMinRole} or above.
         </p>
       )}
+      <ClusterSection apps={apps.value} sessions={sessions.value} />
     </>
   );
 }
@@ -54,8 +63,18 @@ function RunTable({ runs, kind, empty }: { runs?: Run[]; kind: "applications" | 
         <tr>
           <th>Name</th>
           <th>State</th>
-          <th>Submitted by</th>
-          <th>Created</th>
+          <th>
+            Owner
+            <Hint text={explain.owner} />
+          </th>
+          <th>
+            Origin
+            <Hint text={explain.origin} />
+          </th>
+          <th>
+            Started
+            <Hint text={explain.started} />
+          </th>
           <th>Reason</th>
         </tr>
       </thead>
@@ -69,8 +88,11 @@ function RunTable({ runs, kind, empty }: { runs?: Run[]; kind: "applications" | 
             <td>
               <Badge state={r.state} />
             </td>
-            <td>{r.submitterName || r.submitter}</td>
-            <td>{when(r.createdAt)}</td>
+            <td className="reason">{ownerOf(r)}</td>
+            <td>
+              <OriginLabel run={r} />
+            </td>
+            <td>{startOf(r)}</td>
             <td className="reason">{r.reason}</td>
           </tr>
         ))}
@@ -97,6 +119,13 @@ function Facts({ run }: { run: Run }) {
       <dd>
         {run.submitterName || run.submitter}
         {run.workload && " (a workload)"}
+      </dd>
+      <dt>
+        Origin
+        <Hint text={explain.origin} />
+      </dt>
+      <dd>
+        <OriginLabel run={run} />
       </dd>
       {run.dataOwner && (
         <>

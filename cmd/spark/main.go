@@ -133,6 +133,7 @@ func run() error {
 				SessionIdleTimeout: cfg.SessionIdleTimeout, SessionMaxLifetime: cfg.SessionMaxLifetime, Data: cfg.Data.Limits(),
 				Scala: rc.Scala.Enabled},
 			Admission: runs.Admission{MaxRunning: rc.MaxRunning, MaxRunningPerWorkspace: rc.MaxRunningPerWorkspace, MemoryBudgetMi: rc.MemoryBudgetMi},
+			DriverCPU: rc.Driver.CPU, ExecutorCPU: rc.Executor.CPU,
 			LiveLogs: func(ctx context.Context, ns string, tail int64) (string, error) {
 				return launcher.Logs(ctx, ns, tail, 1<<20)
 			},
