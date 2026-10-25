@@ -139,7 +139,7 @@ func (a Applications) createSession(minRole auth.Role) http.HandlerFunc {
 		s, err := a.Store.Create(r.Context(), runs.Run{
 			ID: runID, Kind: "session", Workspace: id.Workspace, Submitter: id.Subject, SubmitterName: id.DisplayName,
 			Workload: id.Workload, Name: spec.Name, Namespace: runs.NamespacePrefix + runID, FootprintMi: v.FootprintMi(), Spec: v,
-			SessionToken: newSessionToken(), DataBearer: dataBearer(v),
+			SessionToken: newSessionToken(), DataBearer: dataBearer(v), SubmitterModule: submitterModule(id),
 		}, key, a.Admission)
 		var capErr runs.ErrAtCapacity
 		switch {

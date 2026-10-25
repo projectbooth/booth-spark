@@ -73,6 +73,14 @@ export function Explainer({ me }: { me: Me }) {
   );
 }
 
+/**
+ * What the page calls a run another module started, by that module's id as core signed it into the
+ * token (origin.module). One line per module that starts Spark runs; any other is "Another module".
+ */
+export const moduleOrigins: Record<string, string> = {
+  notebooks: "Notebook",
+};
+
 /** Where a run came from, in words. */
 export function OriginLabel({ run }: { run: Run }) {
   const o = run.origin;
@@ -93,8 +101,11 @@ export function OriginLabel({ run }: { run: Run }) {
           )}
         </>
       );
-    default:
-      return <>Another module{o.workload && <> ({o.workload})</>}</>;
+    default: {
+      const named = o.module ? moduleOrigins[o.module] : undefined;
+      if (named) return <>{named}</>;
+      return <>Another module{(o.module || o.workload) && <> ({o.module || o.workload})</>}</>;
+    }
   }
 }
 

@@ -53,10 +53,12 @@ export interface DataView {
 /**
  * What started a run (the API's Origin): a person's own token; a pipeline task (ADR 0119), with its
  * pipeline run, task and attempt when booth-pipeline's Idempotency-Key names them; or another
- * module's workload, by its subject's kind.
+ * module's workload, by the module core signed into its token (absent for older runs) and its
+ * subject's kind.
  */
 export interface Origin {
   kind: "person" | "pipeline" | "workload";
+  module?: string;
   workload?: string;
   pipelineRun?: string;
   task?: string;

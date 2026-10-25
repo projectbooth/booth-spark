@@ -92,6 +92,36 @@ func TestStore_CreateGetList(t *testing.T) {
 	}
 }
 
+// The submitting module is recorded as given and stored NULL for a person's run, so the column
+// tells "no module" from any module's name.
+func TestStore_SubmitterModule(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	person, err := s.Create(ctx, newRun(t, "acme", "u1"), "", roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newRun(t, "acme", "pipeline:acme:p8")
+	w.Workload, w.SubmitterModule = true, "pipeline"
+	workload, err := s.Create(ctx, w, "", roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id, want string
+		null     bool
+	}{{person.ID, "", true}, {workload.ID, "pipeline", false}} {
+		got, err := s.Get(ctx, c.id)
+		var isNull bool
+		if qerr := s.db.QueryRow(ctx, `SELECT submitter_module IS NULL FROM runs WHERE id = $1`, c.id).Scan(&isNull); qerr != nil {
+			t.Fatal(qerr)
+		}
+		if err != nil || got.SubmitterModule != c.want || isNull != c.null {
+			t.Errorf("%s: module %q null=%v, want %q null=%v (%v)", c.id, got.SubmitterModule, isNull, c.want, c.null, err)
+		}
+	}
+}
+
 func TestStore_Admission(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

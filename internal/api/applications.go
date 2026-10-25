@@ -69,17 +69,20 @@ type runView struct {
 	Origin originView `json:"origin"`
 }
 
-// originView is what started a run, from what booth-spark already records at submit:
+// originView is what started a run, from what booth-spark records at submit:
 //   - "person": someone's own token, through this module's page or /v1;
-//   - "pipeline": a pipeline task (ADR 0119). Only for a run whose data owner was set, which needs
-//     core's signed booth_module claim to name the pipeline module; the subject's prefix alone
-//     proves nothing. PipelineRun is from its subject, pipeline:<workspace>:<run>, and Task and
-//     Attempt from the Idempotency-Key booth-pipeline sends, <run>/<taskKey>/<attempt>, when that
-//     key starts with the same run;
-//   - "workload": any other workload token, Workload being its subject's kind (the part before
-//     the first colon), as the minting module chose it.
+//   - "pipeline": a pipeline task (ADR 0119): a workload token whose core-signed booth_module
+//     named the pipeline module (SubmitterModule), with a pipeline:<workspace>:<run> subject. A run
+//     recorded before the module was kept counts only if its data owner was set, which needed that
+//     same claim; the subject's prefix alone proves nothing. PipelineRun is from its subject, and
+//     Task and Attempt from the Idempotency-Key booth-pipeline sends, <run>/<taskKey>/<attempt>,
+//     when that key starts with the same run;
+//   - "workload": any other workload token. Module is its core-signed booth_module (empty for a
+//     run recorded before it was kept), and Workload its subject's kind (the part before the first
+//     colon), as the minting module chose it. The page names known modules from a table.
 type originView struct {
 	Kind        string `json:"kind"`
+	Module      string `json:"module,omitempty"`
 	Workload    string `json:"workload,omitempty"`
 	PipelineRun string `json:"pipelineRun,omitempty"`
 	Task        string `json:"task,omitempty"`
@@ -87,13 +90,14 @@ type originView struct {
 }
 
 func origin(r runs.Run) originView {
+	byPipeline := r.SubmitterModule == PipelineModule || r.SubmitterModule == "" && r.DataOwner != ""
 	switch {
 	case !r.Workload:
 		return originView{Kind: "person"}
-	case r.DataOwner == "" || auth.WorkloadKind(r.Submitter) != "pipeline":
-		return originView{Kind: "workload", Workload: auth.WorkloadKind(r.Submitter)}
+	case !byPipeline || auth.WorkloadKind(r.Submitter) != "pipeline":
+		return originView{Kind: "workload", Module: r.SubmitterModule, Workload: auth.WorkloadKind(r.Submitter)}
 	}
-	o := originView{Kind: "pipeline"}
+	o := originView{Kind: "pipeline", Module: PipelineModule}
 	if parts := strings.SplitN(r.Submitter, ":", 3); len(parts) == 3 {
 		o.PipelineRun = parts[2]
 	}
@@ -232,7 +236,7 @@ func (a Applications) submit(minRole auth.Role) http.HandlerFunc {
 		run, err := a.Store.Create(r.Context(), runs.Run{
 			ID: runID, Kind: "application", Workspace: id.Workspace, Submitter: id.Subject, SubmitterName: id.DisplayName,
 			Workload: id.Workload, Name: spec.Name, Namespace: runs.NamespacePrefix + runID, FootprintMi: v.FootprintMi(), Spec: v,
-			DataBearer: dataBearer(v), DataOwner: dataOwner, DataCeiling: dataCeiling,
+			DataBearer: dataBearer(v), DataOwner: dataOwner, DataCeiling: dataCeiling, SubmitterModule: submitterModule(id),
 		}, key, a.Admission)
 		var capErr runs.ErrAtCapacity
 		switch {
@@ -280,6 +284,15 @@ func workloadDataOwner(id auth.Identity) (owner, why string) {
 		return "", "a run submitted with a pipeline's workload token gets data access only when the token names its owner (booth_owner, signed by booth-core; ADR 0119), and this one doesn't"
 	}
 	return id.Owner, ""
+}
+
+// submitterModule is what a run records as its submitting module: a workload token's core-signed
+// booth_module (auth reads it off core's own tokens only), and nothing for a person.
+func submitterModule(id auth.Identity) string {
+	if !id.Workload {
+		return ""
+	}
+	return id.Module
 }
 
 func orUnnamed(module string) string {

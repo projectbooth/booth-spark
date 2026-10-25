@@ -571,13 +571,17 @@ components:
       description: |
         What started the run, from what booth-spark records at submit. `person`: someone's own
         token, through the module's page or this API. `pipeline`: a pipeline task (ADR 0119), only
-        for a run with a data owner, so core's signed booth_module claim named the pipeline module;
+        when core's signed booth_module claim named the pipeline module (recorded at submit; for a
+        run recorded before that, only with a data owner, which needed the same claim);
         `pipelineRun` is from its subject, and `task` and `attempt` from the Idempotency-Key
         booth-pipeline sends (`<run>/<taskKey>/<attempt>`) when it names the same run. `workload`:
         any other workload token, `workload` being its subject's kind as the minting module chose it.
+        `module` is the module core signed into the token (its `booth_module` claim), recorded at
+        submit; absent for a person's run and for runs recorded before it was kept.
       required: [kind]
       properties:
         kind: {type: string, enum: [person, pipeline, workload]}
+        module: {type: string}
         workload: {type: string}
         pipelineRun: {type: string}
         task: {type: string}
