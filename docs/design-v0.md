@@ -937,13 +937,19 @@ anything; managing clusters is a separate question (docs/design-clusters.md).
   `title` attribute until booth-design's shared tooltip lands; one component, `Hint`), and owner,
   origin and start time on every run.
 - **`origin` on every run and session:** `person`; `pipeline`, with `pipelineRun`, `task` and
-  `attempt`; or `workload`, with its subject's kind. It's derived from what was already recorded at
-  submit, so it's right for every run, old ones included:
-  - A run is `pipeline` only when it has a data owner. Only then did core's signed `booth_module`
-    claim name the pipeline module; a `pipeline:` subject alone proves nothing (ADR 0119).
+  `attempt`; or `workload`, with its `module` and its subject's kind.
+  - **The submitting module is recorded at submit** (coordinator ruling on PR #28): the
+    `submitter_module` column (migration 0008, nullable) holds a workload token's core-signed
+    `booth_module` claim, which auth reads off core's own tokens only. It's NULL for a person's run.
+  - A run is `pipeline` when that module is the pipeline module and its subject is
+    `pipeline:<workspace>:<run>`. A `pipeline:` subject alone proves nothing (ADR 0119): another
+    module choosing one shows as that module.
+  - **Runs recorded before the column** have no module. One of them counts as `pipeline` only if it
+    has a data owner, which needed the same claim; otherwise it shows as a workload without its task.
   - The task and attempt come from the `Idempotency-Key` booth-pipeline sends,
     `<run>/<taskKey>/<attempt>`, and only when it names the subject's own run.
-  - A pipeline's run without data access shows as a `pipeline` workload, without its task.
+  - **The page names modules from a table** (`moduleOrigins` in `web/src/overview.tsx`), keyed by the
+    recorded module: `notebooks` shows as "Notebook". A module not in it shows as "Another module".
 - **`GET /v1/cluster`:** there is no standing Spark cluster. Each run gets its own driver pod, which
   asks Kubernetes for its executors in the run's namespace, and both end with the run. So this shows
   what runs share instead:

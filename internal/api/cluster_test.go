@@ -80,25 +80,37 @@ func TestV1_Cluster(t *testing.T) {
 }
 
 // A run's origin: a person; a pipeline task, its task from the key booth-pipeline sends; any other
-// workload by its subject's kind. "pipeline" needs the data owner core's module claim allowed.
+// workload by its recorded module and subject kind. "pipeline" needs core's signed booth_module to
+// have named the pipeline module: recorded at submit, or, for a run recorded before that, implied
+// by a data owner.
 func TestOrigin(t *testing.T) {
+	pl := func(over runs.Run) runs.Run {
+		over.Workload, over.Submitter = true, "pipeline:acme:p8"
+		return over
+	}
 	for _, c := range []struct {
 		name string
 		run  runs.Run
 		want originView
 	}{
 		{"a person", runs.Run{Submitter: "e-1"}, originView{Kind: "person"}},
-		{"a pipeline task", runs.Run{Workload: true, Submitter: "pipeline:acme:p8", DataOwner: "u-alice", IdempotencyKey: "p8/load_games/2"},
-			originView{Kind: "pipeline", PipelineRun: "p8", Task: "load_games", Attempt: "2"}},
-		{"a task key with a slash", runs.Run{Workload: true, Submitter: "pipeline:acme:p8", DataOwner: "u-alice", IdempotencyKey: "p8/group/load/1"},
-			originView{Kind: "pipeline", PipelineRun: "p8", Task: "group/load", Attempt: "1"}},
-		{"a key for another pipeline run names no task", runs.Run{Workload: true, Submitter: "pipeline:acme:p8", DataOwner: "u-alice", IdempotencyKey: "p9/load/1"},
-			originView{Kind: "pipeline", PipelineRun: "p8"}},
-		{"no key", runs.Run{Workload: true, Submitter: "pipeline:acme:p8", DataOwner: "u-alice"},
-			originView{Kind: "pipeline", PipelineRun: "p8"}},
-		{"a pipeline-shaped subject without a data owner is only a workload", runs.Run{Workload: true, Submitter: "pipeline:acme:p13", IdempotencyKey: "p13/x/1"},
+		{"a pipeline task", pl(runs.Run{SubmitterModule: "pipeline", DataOwner: "u-alice", IdempotencyKey: "p8/load_games/2"}),
+			originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8", Task: "load_games", Attempt: "2"}},
+		{"a pipeline task without data access", pl(runs.Run{SubmitterModule: "pipeline", IdempotencyKey: "p8/load_games/1"}),
+			originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8", Task: "load_games", Attempt: "1"}},
+		{"a task key with a slash", pl(runs.Run{SubmitterModule: "pipeline", IdempotencyKey: "p8/group/load/1"}),
+			originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8", Task: "group/load", Attempt: "1"}},
+		{"a key for another pipeline run names no task", pl(runs.Run{SubmitterModule: "pipeline", IdempotencyKey: "p9/load/1"}),
+			originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8"}},
+		{"no key", pl(runs.Run{SubmitterModule: "pipeline"}), originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8"}},
+		{"another module choosing a pipeline-shaped subject", pl(runs.Run{SubmitterModule: "streamlit", IdempotencyKey: "p8/x/1"}),
+			originView{Kind: "workload", Module: "streamlit", Workload: "pipeline"}},
+		{"recorded before the module was kept, with a data owner", pl(runs.Run{DataOwner: "u-alice", IdempotencyKey: "p8/load/3"}),
+			originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8", Task: "load", Attempt: "3"}},
+		{"recorded before the module was kept, without one", pl(runs.Run{IdempotencyKey: "p8/x/1"}),
 			originView{Kind: "workload", Workload: "pipeline"}},
-		{"another module's workload", runs.Run{Workload: true, Submitter: "notebook:acme:n1"}, originView{Kind: "workload", Workload: "notebook"}},
+		{"a notebook", runs.Run{Workload: true, Submitter: "notebook:acme:n1", SubmitterModule: "notebooks"},
+			originView{Kind: "workload", Module: "notebooks", Workload: "notebook"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := origin(c.run); got != c.want {
@@ -117,15 +129,27 @@ func TestOrigin(t *testing.T) {
 		Origin originView `json:"origin"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &v)
-	if rec.Code != 201 || v.Origin != (originView{Kind: "pipeline", PipelineRun: "p8", Task: "load_games", Attempt: "1"}) {
+	if rec.Code != 201 || v.Origin != (originView{Kind: "pipeline", Module: "pipeline", PipelineRun: "p8", Task: "load_games", Attempt: "1"}) {
 		t.Errorf("submit: %d %s", rec.Code, rec.Body)
 	}
 	g := call(h, "editor", "acme", "GET", "/v1/applications/"+v.ID, "")
-	if !strings.Contains(g.Body.String(), `"origin":{"kind":"pipeline","pipelineRun":"p8","task":"load_games","attempt":"1"}`) {
+	if !strings.Contains(g.Body.String(), `"origin":{"kind":"pipeline","module":"pipeline","pipelineRun":"p8","task":"load_games","attempt":"1"}`) {
 		t.Errorf("GET: %s", g.Body)
 	}
 	if rec := call(h, "editor", "acme", "POST", "/v1/applications", pi); !strings.Contains(rec.Body.String(), `"origin":{"kind":"person"}`) {
 		t.Errorf("a person's: %s", rec.Body)
+	}
+	// Recorded from the token's signed module, not its subject: a pipeline task without data access
+	// is the pipeline's; another module choosing a pipeline-shaped subject is that module's.
+	for who, want := range map[string]string{
+		"pipeline":              `"origin":{"kind":"pipeline","module":"pipeline","pipelineRun":"p8","task":"plain","attempt":"1"}`,
+		"streamlit-as-pipeline": `"origin":{"kind":"workload","module":"streamlit","workload":"pipeline"}`,
+		"run":                   `"origin":{"kind":"workload","workload":"pipeline"}`,
+	} {
+		rec := call(h, who, "acme", "POST", "/v1/applications", pi, "Idempotency-Key", "p8/plain/1")
+		if rec.Code != 201 || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: %d %s", who, rec.Code, rec.Body)
+		}
 	}
 	if rec := call(h, "editor", "acme", "POST", "/v1/sessions", `{"name":"s"}`); rec.Code != 201 || !strings.Contains(rec.Body.String(), `"origin":{"kind":"person"}`) {
 		t.Errorf("a session: %d %s", rec.Code, rec.Body)

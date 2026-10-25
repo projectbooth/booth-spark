@@ -176,6 +176,31 @@ describe("the runs page, explained", () => {
     expect(within(mineRow).getByText(/^waiting since /)).toBeInTheDocument();
   });
 
+  it("names a run's module from the table, by the module core signed, not the subject", async () => {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (url === "ui/api/applications") return { json: { applications: [] } };
+      if (url === "ui/api/sessions")
+        return {
+          json: {
+            sessions: [
+              run({ id: "s2", kind: "session", name: "nb", workload: true, origin: { kind: "workload", module: "notebooks", workload: "notebook" } }),
+              run({ id: "s3", kind: "session", name: "odd", workload: true, origin: { kind: "workload", module: "streamlit", workload: "notebook" } }),
+              run({ id: "s4", kind: "session", name: "old", workload: true, origin: { kind: "workload", workload: "notebook" } }),
+            ],
+          },
+        };
+      if (url === "ui/api/cluster") return { json: cluster };
+      return { status: 404, json: { error: "not found" } };
+    });
+    render(<App />);
+    const rowOf = async (name: string) => (await screen.findAllByRole("link", { name }))[0].closest("tr")!;
+    expect(within(await rowOf("nb")).getByText("Notebook")).toBeInTheDocument();
+    // A notebook-shaped subject from another module is that module's; an older run names its kind.
+    expect(within(await rowOf("odd")).getByText("Another module (streamlit)")).toBeInTheDocument();
+    expect(within(await rowOf("old")).getByText("Another module (notebook)")).toBeInTheDocument();
+  });
+
   it("shows the cluster read-only: master, workers, capacity and what runs on it", async () => {
     page();
     const section = (await screen.findByRole("heading", { level: 2, name: "Clusters" })).closest("section")!;
