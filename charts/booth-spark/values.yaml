@@ -72,8 +72,8 @@ runs:
   # booth-spark's runtime image (images/spark-runtime, published by release.yml for linux/amd64 and
   # linux/arm64), Spark 4.1.3 plus the JDBC driver, Iceberg, S3A and the module's credential helpers
   # that data access needs. Pinned by its multi-arch index digest. Plain apache/spark works for runs
-  # without data access; the chart refuses it with dataAccess.enabled.
-  image: ghcr.io/projectbooth/booth-spark-runtime:0.1.0@sha256:e3f096a24dbc1d07e5099b81b422cc248e394a43f92f1f3c915df567c5ad198b
+  # without data access; the chart refuses it with dataAccess.enabled or runs.scala.enabled.
+  image: ghcr.io/projectbooth/booth-spark-runtime:0.4.0@sha256:e191951495674853b4f586f2bfd0eceedd7020d039ac52f32321d45c936f2ceb
   imagePullPolicy: IfNotPresent
   # Admission (item 7): how many runs may be live at once, install-wide and per workspace (0: no
   # per-workspace cap), and the memory all live runs may use together, each counted at its largest
@@ -94,11 +94,11 @@ runs:
   pendingTimeout: 10m
   # Scala source as an application's entry point (main.inlineScala, main.scala; docs/design-scala.md,
   # ADR 0121). Needs runs.image to carry the Scala runner (/opt/booth/booth-scala-runner.jar), which
-  # the runtime image has from booth-spark 0.4.0; the image pinned above predates it, so this stays
-  # off until the pin moves. A Scala driver gets at least 640Mi of overhead instead of 384Mi (1152Mi
-  # at the default 512m heap) and capped metaspace and code cache; Python and JAR runs are unchanged.
+  # the runtime image has from booth-spark 0.4.0, the image pinned above; turn it off for an image
+  # without it. A Scala driver gets at least 640Mi of overhead instead of 384Mi (1152Mi at the
+  # default 512m heap) and capped metaspace and code cache; Python and JAR runs are unchanged.
   scala:
-    enabled: false
+    enabled: true
   driver:
     # Default heap (512m plus 384Mi overhead: an 896Mi pod).
     memory: 512m

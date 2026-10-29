@@ -131,9 +131,15 @@ func TestChart_DataAccess(t *testing.T) {
 		t.Errorf("backend ingress = %+v", np.Spec)
 	}
 
-	// Refused: data access with plain Spark (no JDBC, Iceberg or S3A), or an unpinned sidecar.
-	helmFails(t, "needs runs.image to be booth-spark's runtime image", "--api-versions", vapAPI, "--set", "dataAccess.enabled=true",
-		"--set", "runs.image=apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211")
+	// Refused: data access with plain Spark (no JDBC, Iceberg or S3A), or an unpinned sidecar. Scala
+	// off, so the refusal is data access's own.
+	const plainSpark = "runs.image=apache/spark:4.1.3-scala2.13-java21-python3-ubuntu@sha256:bf9d035a7c32a8ca46aa58d6348182ffd7d2dff6409206ecfbb3915ff1fef211"
+	helmFails(t, "dataAccess.enabled needs runs.image to be booth-spark's runtime image", "--api-versions", vapAPI, "--set", "dataAccess.enabled=true",
+		"--set", "runs.scala.enabled=false", "--set", plainSpark)
+	// Scala (on by default) with plain Spark, which has no runner: refused for that; with Scala off,
+	// plain Spark without data access renders.
+	helmFails(t, "runs.scala.enabled needs runs.image to be booth-spark's runtime image with the Scala runner", "--api-versions", vapAPI, "--set", plainSpark)
+	renderBoothModule(t, "--set", "runs.scala.enabled=false", "--set", plainSpark)
 	// The default runs.image is the published runtime image, pinned by digest: data access needs
 	// nothing more than turning it on.
 	renderBoothModule(t, "--set", "dataAccess.enabled=true")
