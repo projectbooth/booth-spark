@@ -99,6 +99,8 @@ export interface Run {
   name: string;
   state: State;
   reason?: string;
+  /** While pending: why it still waits at launch, in the backend's words. Absent from an older backend. */
+  waitingReason?: string;
   stopRequested: boolean;
   createdAt: string;
   startedAt?: string;
@@ -129,6 +131,29 @@ export interface Run {
     jar?: { backendId: string; path: string; sha256?: string };
     mainClass?: string;
   };
+}
+
+export interface FileRef {
+  backendId: string;
+  path: string;
+  sha256?: string;
+}
+
+/** POST /v1/applications' body, as GET /v1/applications/{id}/spec gives it back ("Run again"). */
+export interface Spec {
+  name: string;
+  main: { inlinePython?: string; inlineScala?: string; python?: FileRef; scala?: FileRef; jar?: FileRef; mainClass?: string };
+  args?: string[];
+  resources?: { driver?: { memory?: string }; executors?: { min?: number; max?: number; memory?: string } };
+  conf?: Record<string, string>;
+  dataAccess?: { database?: boolean; lakehouse?: boolean; storage?: StorageLocation[] };
+  maxDuration?: string;
+}
+
+/** A run's spec, and whether retention has cleared its inline code. */
+export interface SpecView {
+  spec: Spec;
+  codeCleared: boolean;
 }
 
 export type StatementState = "waiting" | "running" | "available" | "error" | "cancelled";
@@ -201,7 +226,21 @@ const enc = encodeURIComponent;
 export const api = {
   me: () => call<Me>("GET", "me"),
   applications: () => call<{ applications: Run[] }>("GET", "applications").then((r) => r.applications ?? []),
+  /** The newest `limit` applications, and whether there are more (an older backend: never). */
+  applicationsPage: (limit: number) =>
+    call<{ applications: Run[]; more?: boolean }>("GET", "applications?limit=" + limit).then((r) => ({
+      runs: r.applications ?? [],
+      more: !!r.more,
+    })),
+  /** Every live application, whichever page it is on. */
+  liveApplications: () =>
+    Promise.all(
+      (["pending", "running"] as State[]).map((s) =>
+        call<{ applications: Run[] }>("GET", "applications?state=" + s).then((r) => r.applications ?? []),
+      ),
+    ).then((rs) => rs.flat()),
   application: (id: string) => call<Run>("GET", "applications/" + enc(id)),
+  applicationSpec: (id: string) => call<SpecView>("GET", "applications/" + enc(id) + "/spec"),
   submit: (spec: unknown) => call<Run>("POST", "applications", spec),
   stop: (id: string) => call<Run>("POST", "applications/" + enc(id) + "/stop"),
   logs: (id: string) => call<string>("GET", "applications/" + enc(id) + "/logs?tail=2000"),

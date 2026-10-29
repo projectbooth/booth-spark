@@ -324,12 +324,30 @@ func TestController_Data(t *testing.T) {
 	later := newDataRun()
 	data.prepareErr = errors.New("booth-core unreachable")
 	c.Pass(ctx)
-	if got, _ = s.Get(ctx, later.ID); got.State != Pending || got.Launched {
-		t.Errorf("after an outage: %s launched=%t", got.State, got.Launched)
+	// Why it waits is on the run while it does (once, not rewritten every pass).
+	if got, _ = s.Get(ctx, later.ID); got.State != Pending || got.Launched || got.WaitingReason != "resolving data access (will retry): booth-core unreachable" {
+		t.Errorf("after an outage: %s launched=%t waiting %q", got.State, got.Launched, got.WaitingReason)
+	}
+	c.Pass(ctx)
+	if got, _ = s.Get(ctx, later.ID); got.WaitingReason != "resolving data access (will retry): booth-core unreachable" {
+		t.Errorf("after another pass: %q", got.WaitingReason)
 	}
 	now = now.Add(11 * time.Minute)
 	c.Pass(ctx)
-	if got, _ = s.Get(ctx, later.ID); got.State != Failed || !strings.Contains(got.Reason, "unreachable") {
-		t.Errorf("after the pending timeout: %s %q", got.State, got.Reason)
+	if got, _ = s.Get(ctx, later.ID); got.State != Failed || !strings.Contains(got.Reason, "unreachable") || got.WaitingReason != "" {
+		t.Errorf("after the pending timeout: %s %q waiting %q", got.State, got.Reason, got.WaitingReason)
+	}
+
+	// The outage over: resolved and launched, and no longer waiting for it.
+	now = time.Now()
+	recovers := newDataRun()
+	c.Pass(ctx)
+	if got, _ = s.Get(ctx, recovers.ID); got.WaitingReason == "" {
+		t.Errorf("not waiting during the outage: %+v", got)
+	}
+	data.prepareErr = nil
+	c.Pass(ctx)
+	if got, _ = s.Get(ctx, recovers.ID); !got.Launched || got.WaitingReason != "" {
+		t.Errorf("launched: %t waiting %q", got.Launched, got.WaitingReason)
 	}
 }

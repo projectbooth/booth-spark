@@ -242,10 +242,23 @@ func TestController(t *testing.T) {
 	if got, _ := s.Get(ctx, r.ID); !got.Launched || len(f.launched) != 1 {
 		t.Fatalf("not launched: %+v", got)
 	}
+	// Scheduled but not yet running: why it waits, then nothing once it runs.
+	f.driver[r.Namespace] = DriverState{Exists: true, Phase: corev1.PodPending, Reason: "not scheduled: 0/2 nodes have enough memory"}
+	c.Pass(ctx)
+	if got, _ := s.Get(ctx, r.ID); got.State != Pending || got.WaitingReason != "not scheduled: 0/2 nodes have enough memory" {
+		t.Errorf("pending driver: %s %q", got.State, got.WaitingReason)
+	}
+	f.driver[r.Namespace] = DriverState{Exists: true, Phase: corev1.PodPending}
+	c.Pass(ctx)
+	if got, _ := s.Get(ctx, r.ID); got.WaitingReason != "" {
+		t.Errorf("scheduled: waiting %q", got.WaitingReason)
+	}
+	f.driver[r.Namespace] = DriverState{Exists: true, Phase: corev1.PodPending, Reason: "not scheduled: again"}
+	c.Pass(ctx)
 	f.driver[r.Namespace] = DriverState{Exists: true, Phase: corev1.PodRunning}
 	c.Pass(ctx)
-	if got, _ := s.Get(ctx, r.ID); got.State != Running {
-		t.Errorf("state = %s", got.State)
+	if got, _ := s.Get(ctx, r.ID); got.State != Running || got.WaitingReason != "" {
+		t.Errorf("state = %s waiting %q", got.State, got.WaitingReason)
 	}
 	f.driver[r.Namespace] = DriverState{Exists: true, Phase: corev1.PodSucceeded}
 	c.Pass(ctx)
@@ -302,6 +315,10 @@ func TestController(t *testing.T) {
 	stuck, _ := s.Create(ctx, newRun(t, "acme", "u1"), "", roomy)
 	c.Pass(ctx)
 	f.driver[stuck.Namespace] = DriverState{Exists: true, Phase: corev1.PodPending, Reason: "not scheduled: 0/1 nodes"}
+	c.Pass(ctx)
+	if got, _ := s.Get(ctx, stuck.ID); got.State != Pending || got.WaitingReason != "not scheduled: 0/1 nodes" {
+		t.Errorf("waiting for its driver: %s %q", got.State, got.WaitingReason)
+	}
 	now = now.Add(11 * time.Minute)
 	c.Pass(ctx)
 	if got, _ := s.Get(ctx, stuck.ID); got.State != Failed || !strings.Contains(got.Reason, "not scheduled") {

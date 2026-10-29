@@ -48,6 +48,17 @@ const run = (over: Record<string, unknown> = {}) => ({
 
 let calls: { method: string; url: string; body?: unknown }[] = [];
 
+/** GET ui/api/applications with any query: the list endpoint. */
+const isList = (url: string) => url.split("?")[0] === "ui/api/applications";
+
+/** The list endpoint's answer, as the backend gives it: state, then limit, and whether there are more. */
+function listing(url: string, runs: ReturnType<typeof run>[]) {
+  const q = new URLSearchParams(url.split("?")[1] ?? "");
+  const matching = runs.filter((r) => !q.get("state") || r.state === q.get("state"));
+  const limit = Number(q.get("limit") ?? 200);
+  return { json: { applications: matching.slice(0, limit), more: matching.length > limit } };
+}
+
 function serve(handler: Handler) {
   calls = [];
   vi.stubGlobal(
@@ -77,7 +88,7 @@ describe("the runs page", () => {
   it("lists applications and sessions, relative to the iframe path, and offers submission to an editor", async () => {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: editor };
-      if (url === "ui/api/applications") return { json: { applications: [run({ state: "succeeded", reason: "the application finished" })] } };
+      if (isList(url)) return listing(url, [run({ state: "succeeded", reason: "the application finished" })]);
       if (url === "ui/api/sessions") return { json: { sessions: [] } };
       return { status: 404, json: { error: "not found" } };
     });
@@ -93,7 +104,7 @@ describe("the runs page", () => {
   it("offers a viewer no submission, and says why", async () => {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: viewer };
-      if (url === "ui/api/applications") return { json: { applications: [] } };
+      if (isList(url)) return listing(url, []);
       if (url === "ui/api/sessions") return { json: { sessions: [] } };
       if (url === "ui/api/cluster") return { json: cluster };
       return { status: 404, json: { error: "not found" } };
@@ -137,7 +148,7 @@ describe("the runs page, explained", () => {
   function page() {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: editor };
-      if (url === "ui/api/applications") return { json: { applications: [pipelineRun, mine] } };
+      if (isList(url)) return listing(url, [pipelineRun, mine]);
       if (url === "ui/api/sessions") return { json: { sessions: [session] } };
       if (url === "ui/api/cluster") return { json: cluster };
       return { status: 404, json: { error: "not found" } };
@@ -179,7 +190,7 @@ describe("the runs page, explained", () => {
   it("names a run's module from the table, by the module core signed, not the subject", async () => {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: editor };
-      if (url === "ui/api/applications") return { json: { applications: [] } };
+      if (isList(url)) return listing(url, []);
       if (url === "ui/api/sessions")
         return {
           json: {
@@ -226,7 +237,7 @@ describe("the runs page, explained", () => {
   it("counts the live sessions it can't show", async () => {
     serve((_m, url) => {
       if (url === "ui/api/me") return { json: editor };
-      if (url === "ui/api/applications") return { json: { applications: [] } };
+      if (isList(url)) return listing(url, []);
       if (url === "ui/api/sessions") return { json: { sessions: [] } };
       if (url === "ui/api/cluster") return { json: { ...cluster, capacity: { ...cluster.capacity, liveRuns: 2, liveRunsInWorkspace: 2 } } };
       return { status: 404, json: { error: "not found" } };
@@ -384,7 +395,7 @@ describe("submitting", () => {
     serve((_m, url) => (url === "ui/api/me" ? { json: editor } : { json: {} }));
     window.location.hash = "#/new";
     render(<App />);
-    expect(await screen.findByRole("radio", { name: "PySpark code" })).toBeChecked();
+    expect(await screen.findByRole("radio", { name: /^PySpark code/ })).toBeChecked();
     expect(screen.queryByRole("radio", { name: "Scala code" })).toBeNull();
   });
 
@@ -394,7 +405,7 @@ describe("submitting", () => {
     render(<App />);
     expect(await screen.findByLabelText("JAR in Storage")).toBeDisabled();
     expect(screen.getByText("A JAR is read from booth-storage, which this install doesn't offer runs.")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "PySpark code" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^PySpark code/ })).toBeChecked();
     expect(screen.getByRole("textbox", { name: /^PySpark code/ })).toBeInTheDocument();
   });
 
@@ -494,5 +505,231 @@ describe("a session's page", () => {
     render(<App />);
     expect(await screen.findByText("Only its submitter runs statements in a session.")).toBeInTheDocument();
     expect(screen.queryByLabelText("Statement")).toBeNull();
+  });
+});
+
+const lakeEditor = { ...editor, limits: { ...editor.limits, dataAccess: { database: true, lakehouse: true, storage: true } } };
+
+describe("the runs page, sessions first and applications a page at a time", () => {
+  const many = Array.from({ length: 25 }, (_, i) => run({ id: "a" + i, name: "app-" + i, state: i === 24 ? "running" : "succeeded" }));
+
+  it("puts Sessions above Applications, shows the newest 20 and the rest on Show more", async () => {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (isList(url)) return listing(url, many);
+      if (url === "ui/api/sessions") return { json: { sessions: [] } };
+      if (url === "ui/api/cluster") return { json: cluster };
+      return { status: 404, json: { error: "not found" } };
+    });
+    render(<App />);
+    expect(await screen.findByRole("link", { name: "app-0" })).toBeInTheDocument();
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings.indexOf("Sessions")).toBeGreaterThanOrEqual(0);
+    expect(headings.indexOf("Sessions")).toBeLessThan(headings.indexOf("Applications"));
+    // One page: 20, newest first, as the API gives them.
+    expect(screen.getByRole("link", { name: "app-19" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "app-20" })).toBeNull();
+    expect(calls.some((c) => c.url === "ui/api/applications?limit=20")).toBe(true);
+    expect(screen.getByText("The newest 20.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await screen.findByText("The newest 25.")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "app-24" }).length).toBeGreaterThan(0);
+    expect(calls.some((c) => c.url === "ui/api/applications?limit=40")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  it("counts every live application in Clusters, whichever page it's on", async () => {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (isList(url)) return listing(url, many);
+      if (url === "ui/api/sessions") return { json: { sessions: [] } };
+      if (url === "ui/api/cluster") return { json: { ...cluster, capacity: { ...cluster.capacity, liveRuns: 1, liveRunsInWorkspace: 1 } } };
+      return { status: 404, json: { error: "not found" } };
+    });
+    render(<App />);
+    const section = (await screen.findByRole("heading", { name: "Clusters", level: 2 })).closest("section")!;
+    // app-24 is live but on the second page: still on the cluster.
+    expect(await within(section).findByRole("link", { name: "app-24" })).toBeInTheDocument();
+    expect(within(section).queryByText(/other people's sessions/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Show more" })).toBeInTheDocument();
+  });
+
+  it("shows why a pending run waits, in the list and on its page; nothing once it runs", async () => {
+    const why = "resolving data access (will retry): the workspace's warehouse: the credential broker answered 503";
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: editor };
+      if (isList(url))
+        return listing(url, [
+          run({ id: "w1", name: "waits", state: "pending", waitingReason: why }),
+          run({ id: "w2", name: "runs", waitingReason: "stale" }),
+        ]);
+      if (url === "ui/api/sessions") return { json: { sessions: [] } };
+      if (url === "ui/api/cluster") return { json: cluster };
+      if (url === "ui/api/applications/w1") return { json: run({ id: "w1", state: "pending", waitingReason: why }) };
+      if (url.includes("/logs")) return { text: "" };
+      return { status: 404, json: { error: "not found" } };
+    });
+    render(<App />);
+    const row = (await screen.findByRole("link", { name: "waits" })).closest("tr")!;
+    expect(within(row).getByText("waiting: " + why)).toBeInTheDocument();
+    expect(within(row).getByText("pending")).toBeInTheDocument();
+    expect(screen.queryByText(/stale/)).toBeNull();
+    window.location.hash = "#/applications/w1";
+    expect(await screen.findByText("Waiting")).toBeInTheDocument();
+    expect(screen.getByText(why)).toBeInTheDocument();
+  });
+});
+
+describe("Run again", () => {
+  const spec = {
+    name: "weekly",
+    main: { inlinePython: "print(spark.table('lakehouse.nfl.games').count())" },
+    args: ["2026", "8"],
+    resources: { driver: { memory: "1g" }, executors: { min: 1, max: 2, memory: "1536m" } },
+    conf: { "spark.sql.shuffle.partitions": "8" },
+    dataAccess: { lakehouse: true, storage: [{ backendId: "lake", path: "acme-files/in", access: "readwrite" }] },
+    maxDuration: "30m",
+  };
+  const old = run({ name: "weekly", state: "succeeded" });
+  function serveOld(over: { spec?: object; codeCleared?: boolean; run?: object } = {}) {
+    serve((m, url) => {
+      if (url === "ui/api/me") return { json: lakeEditor };
+      if (url === "ui/api/applications/r1/spec") return { json: { spec: over.spec ?? spec, codeCleared: !!over.codeCleared } };
+      if (url === "ui/api/applications" && m === "POST") return { status: 201, json: run({ id: "r9", state: "pending" }) };
+      if (url.includes("/logs")) return { text: "" };
+      if (url === "ui/api/applications/r1") return { json: { ...old, ...over.run } };
+      return { json: run({ id: "r9" }) };
+    });
+  }
+
+  it("opens New application filled in from the run, and submits a new run", async () => {
+    serveOld();
+    window.location.hash = "#/applications/r1";
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Run again with these settings" }));
+    expect(window.location.hash).toBe("#/new/r1");
+    expect(await screen.findByText(/Submitting starts a new run; that one stays as it is/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("weekly");
+    expect(screen.getByRole("textbox", { name: /^PySpark code/ })).toHaveValue(spec.main.inlinePython);
+    expect(screen.getByLabelText(/^Arguments/)).toHaveValue("2026\n8");
+    expect(screen.getByLabelText(/^Driver memory/)).toHaveValue("1g");
+    expect(screen.getByLabelText(/^Executor memory/)).toHaveValue("1536m");
+    expect(screen.getByLabelText(/the workspace's lakehouse/)).toBeChecked();
+    expect(screen.getByLabelText(/^Storage locations/)).toHaveValue("lake/acme-files/in rw");
+    expect(screen.getByText(/Also kept from it: spark.sql.shuffle.partitions=8; at least 1 executor; at most 30m/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/applications/r9"));
+    // One new submission with the same settings; nothing sent to the old run.
+    const writes = calls.filter((c) => c.method !== "GET");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ method: "POST", url: "ui/api/applications" });
+    expect(writes[0].body).toEqual(spec);
+  });
+
+  it("says when retention cleared the code, and fills in only the settings", async () => {
+    serveOld({
+      spec: { ...spec, main: {} },
+      codeCleared: true,
+      run: { contentClearedAt: "2026-10-12T10:00:00Z", main: { inlinePythonBytes: 50, inlinePythonSha256: "ab".repeat(32) } },
+    });
+    window.location.hash = "#/new/r1";
+    render(<App />);
+    expect(await screen.findByText(/Its code was cleared .* \(sessions.resultRetention\), so only its settings are filled in/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^PySpark code/ })).toHaveValue("");
+    expect(screen.getByLabelText(/^Driver memory/)).toHaveValue("1g");
+    expect(screen.getByLabelText(/the workspace's lakehouse/)).toBeChecked();
+  });
+
+  it("keeps a Python file entry point as it was", async () => {
+    serveOld({ spec: { name: "nightly", main: { python: { backendId: "lake", path: "jobs/etl.py", sha256: "cd".repeat(32) } } } });
+    window.location.hash = "#/new/r1";
+    render(<App />);
+    expect(await screen.findByRole("radio", { name: /The earlier run's Python file in Storage/ })).toBeChecked();
+    expect(screen.getByText("lake/jobs/etl.py")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+        name: "nightly",
+        main: { python: { backendId: "lake", path: "jobs/etl.py", sha256: "cd".repeat(32) } },
+      }),
+    );
+  });
+
+  it("isn't offered to someone who can't read the run's code, or can't submit", async () => {
+    for (const me of [{ ...editor, subject: "u-editor2" }, viewer]) {
+      serve((_m, url) => {
+        if (url === "ui/api/me") return { json: me };
+        if (url === "ui/api/applications/r1") return { json: old };
+        if (url.includes("/logs")) return { text: "" };
+        return { status: 404, json: { error: "not found" } };
+      });
+      window.location.hash = "#/applications/r1";
+      const { unmount } = render(<App />);
+      expect(await screen.findByRole("heading", { name: "weekly" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Run again with these settings" })).toBeNull();
+      unmount();
+    }
+  });
+});
+
+describe("lakehouse hints", () => {
+  it("warns on the form when the code names lakehouse. and the box is off, without blocking the submit", async () => {
+    serve((m, url) => {
+      if (url === "ui/api/me") return { json: lakeEditor };
+      if (url === "ui/api/applications" && m === "POST") return { status: 201, json: run({ id: "r9", state: "pending" }) };
+      return { json: run({ id: "r9" }) };
+    });
+    window.location.hash = "#/new";
+    render(<App />);
+    const code = await screen.findByRole("textbox", { name: /^PySpark code/ });
+    // Positive control: the default code names no lakehouse.
+    expect(screen.queryByText(/the lakehouse box is off/)).toBeNull();
+    await userEvent.clear(code);
+    await userEvent.type(code, "spark.table('lakehouse.nfl.games').show()");
+    expect(screen.getByText(/the lakehouse box is off/)).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText(/the workspace's lakehouse/));
+    expect(screen.queryByText(/the lakehouse box is off/)).toBeNull();
+    await userEvent.click(screen.getByLabelText(/the workspace's lakehouse/));
+    // A word that only ends in lakehouse isn't the catalog.
+    await userEvent.clear(code);
+    await userEvent.type(code, "mylakehouse.x = 1");
+    expect(screen.queryByText(/the lakehouse box is off/)).toBeNull();
+    await userEvent.type(code, "\nlakehouse.x");
+    expect(screen.getByText(/the lakehouse box is off/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+    await userEvent.type(screen.getByLabelText("Name"), "etl");
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/applications/r9"));
+    expect(calls.find((c) => c.method === "POST")?.body).not.toHaveProperty("dataAccess.lakehouse");
+  });
+
+  const missing =
+    "pyspark.errors.exceptions.captured.AnalysisException: [REQUIRES_SINGLE_PART_NAMESPACE] spark_catalog requires a single-part namespace, but got `lakehouse`.`nfl`. SQLSTATE: 42K05";
+  function failed(over: object, log: string) {
+    serve((_m, url) => {
+      if (url === "ui/api/me") return { json: lakeEditor };
+      if (url === "ui/api/applications/r1") return { json: run({ state: "failed", reason: "the driver exited with code 1 (Error)", ...over }) };
+      if (url.startsWith("ui/api/applications/r1/logs")) return { text: log };
+      return { status: 404, json: { error: "not found" } };
+    });
+    window.location.hash = "#/applications/r1";
+    render(<App />);
+  }
+
+  it("says on a failed run's page that it had no lakehouse access, when its log shows why", async () => {
+    failed({}, "line\n" + missing + "\n");
+    expect(await screen.findByText(/this run had no lakehouse data access/)).toBeInTheDocument();
+  });
+
+  it("says nothing when the run had lakehouse access", async () => {
+    failed({ dataAccess: { lakehouse: true } }, missing);
+    await waitFor(() => expect(screen.getByLabelText("Driver log").textContent).toContain("REQUIRES_SINGLE_PART_NAMESPACE"));
+    expect(screen.queryByText(/this run had no lakehouse data access/)).toBeNull();
+  });
+
+  it("says nothing for the same error about another name", async () => {
+    failed({}, missing.replace("`lakehouse`", "`warehouse`"));
+    await waitFor(() => expect(screen.getByLabelText("Driver log").textContent).toContain("REQUIRES_SINGLE_PART_NAMESPACE"));
+    expect(screen.queryByText(/this run had no lakehouse data access/)).toBeNull();
   });
 });

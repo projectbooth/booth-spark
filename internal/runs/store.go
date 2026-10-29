@@ -75,6 +75,9 @@ type Run struct {
 	// booth_module claim at submit (auth.Identity.Module). Empty for a person's run, and for a run
 	// recorded before it was kept.
 	SubmitterModule string `json:"-"`
+	// WaitingReason is why a pending run is still waiting at launch (resolving its data access, its
+	// driver not yet scheduled), in the backend's words; empty once it starts or ends.
+	WaitingReason string `json:"waitingReason,omitempty"`
 }
 
 // DataOwnerID is whom the run reads and writes data as: DataOwner, else its submitter.
@@ -175,14 +178,15 @@ func NewID() string {
 const runColumns = `id, kind, workspace, submitter, submitter_name, workload, name, state, reason, namespace,
 	stop_requested, created_at, started_at, finished_at, footprint_mi, spec, launched, last_activity_at, session_token,
 	content_cleared_at, data_bearer, data, data_owner, data_ceiling, coalesce(idempotency_key, ''),
-	coalesce(submitter_module, '')`
+	coalesce(submitter_module, ''), coalesce(waiting_reason, '')`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var r Run
 	var spec, data []byte
 	err := row.Scan(&r.ID, &r.Kind, &r.Workspace, &r.Submitter, &r.SubmitterName, &r.Workload, &r.Name, &r.State,
 		&r.Reason, &r.Namespace, &r.StopRequested, &r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.FootprintMi, &spec, &r.Launched,
-		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data, &r.DataOwner, &r.DataCeiling, &r.IdempotencyKey, &r.SubmitterModule)
+		&r.LastActivityAt, &r.SessionToken, &r.ContentClearedAt, &r.DataBearer, &data, &r.DataOwner, &r.DataCeiling, &r.IdempotencyKey, &r.SubmitterModule,
+		&r.WaitingReason)
 	if err != nil {
 		return r, err
 	}
@@ -309,15 +313,23 @@ func (s *Store) query(ctx context.Context, sql string, args ...any) ([]Run, erro
 	return out, rows.Err()
 }
 
-// MarkLaunched records that a run's namespace and objects exist.
+// MarkLaunched records that a run's namespace and objects exist. What it waited for before its
+// launch no longer applies.
 func (s *Store) MarkLaunched(ctx context.Context, id string) error {
-	_, err := s.db.Exec(ctx, `UPDATE runs SET launched = true WHERE id = $1`, id)
+	_, err := s.db.Exec(ctx, `UPDATE runs SET launched = true, waiting_reason = NULL WHERE id = $1`, id)
+	return err
+}
+
+// SetWaiting records why a pending run is still waiting at launch ("" clears it). A run that has
+// started or ended keeps none.
+func (s *Store) SetWaiting(ctx context.Context, id, reason string) error {
+	_, err := s.db.Exec(ctx, `UPDATE runs SET waiting_reason = NULLIF($2, '') WHERE id = $1 AND state = 'pending'`, id, truncate(reason, 500))
 	return err
 }
 
 // MarkRunning moves a pending run to running.
 func (s *Store) MarkRunning(ctx context.Context, id string, at time.Time) error {
-	_, err := s.db.Exec(ctx, `UPDATE runs SET state = 'running', started_at = coalesce(started_at, $2) WHERE id = $1 AND state = 'pending'`, id, at)
+	_, err := s.db.Exec(ctx, `UPDATE runs SET state = 'running', started_at = coalesce(started_at, $2), waiting_reason = NULL WHERE id = $1 AND state = 'pending'`, id, at)
 	return err
 }
 
@@ -333,8 +345,8 @@ func (s *Store) FinishAt(ctx context.Context, id string, st State, reason, logTa
 		return fmt.Errorf("finish: %s is not terminal", st)
 	}
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE runs SET state = $2, reason = $3, log_tail = $4, finished_at = $5, log_tail_offset = $6
-			WHERE id = $1 AND state IN ('pending', 'running')`, id, st, truncate(reason, 1000), logTail, at, logOffset)
+		tag, err := tx.Exec(ctx, `UPDATE runs SET state = $2, reason = $3, log_tail = $4, finished_at = $5, log_tail_offset = $6,
+			waiting_reason = NULL WHERE id = $1 AND state IN ('pending', 'running')`, id, st, truncate(reason, 1000), logTail, at, logOffset)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}

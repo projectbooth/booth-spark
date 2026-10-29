@@ -131,6 +131,13 @@ paths:
           required: false
           description: Only the caller's own runs
           schema: {type: boolean}
+        - name: limit
+          in: query
+          required: false
+          description: |
+            At most this many runs (default 200), newest first, after the filters. `more` says
+            whether there are others among the workspace's 200 newest.
+          schema: {type: integer, minimum: 1, maximum: 200}
       responses:
         "200":
           description: The runs
@@ -143,6 +150,10 @@ paths:
                   applications:
                     type: array
                     items: {$ref: "#/components/schemas/Run"}
+                  more:
+                    type: boolean
+                    description: More runs match than `limit` let through
+        "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
     post:
@@ -273,6 +284,35 @@ paths:
         "404": {$ref: "#/components/responses/Error"}
         "410": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
+  /applications/{id}/spec:
+    get:
+      tags: [applications]
+      operationId: getApplicationSpec
+      summary: A run's spec, to submit again (its submitter, a workspace owner or a platform operator)
+      description: |
+        The run's spec as `POST /applications` takes it, with its inline code and arguments, for
+        submitting a new run with the same settings ("Run again"); the run itself never changes.
+        Once sessions.resultRetention has cleared the run's inline code, `codeCleared` is true and
+        the spec has no code.
+      parameters:
+        - $ref: "#/components/parameters/Workspace"
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run's spec
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [spec, codeCleared]
+                properties:
+                  spec: {$ref: "#/components/schemas/ApplicationSpec"}
+                  codeCleared:
+                    type: boolean
+                    description: The run's inline code was cleared by sessions.resultRetention
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /sessions:
     get:
       tags: [sessions]
@@ -739,6 +779,11 @@ components:
         name: {type: string}
         state: {$ref: "#/components/schemas/State"}
         reason: {type: string, description: "Why the run is in its state, once it has ended"}
+        waitingReason:
+          type: string
+          description: |
+            While the run is pending: why it is still waiting at launch (resolving its data access,
+            its driver not yet scheduled), in the backend's words. Absent once it starts or ends.
         stopRequested: {type: boolean}
         createdAt: {type: string, format: date-time}
         startedAt: {type: string, format: date-time}
