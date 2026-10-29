@@ -183,6 +183,7 @@ func (a Applications) routes(r chi.Router, minRole auth.Role) {
 	r.Get("/applications/{id}", a.get)
 	r.Post("/applications/{id}/stop", a.stop)
 	r.Get("/applications/{id}/logs", a.logs)
+	r.Get("/applications/{id}/spec", a.spec)
 	r.Get("/cluster", a.cluster)
 	a.sessionRoutes(r, minRole)
 }
@@ -313,7 +314,7 @@ func dataRoleCeiling(role auth.Role) string {
 
 func (a Applications) list(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	list, err := a.Store.List(r.Context(), id.Workspace, "application", 200)
+	list, err := a.Store.List(r.Context(), id.Workspace, "application", listMax)
 	if err != nil {
 		log.Printf("api: list runs: %v", err)
 		apiError(w, http.StatusInternalServerError, "internal", "could not list runs")
@@ -321,14 +322,55 @@ func (a Applications) list(w http.ResponseWriter, r *http.Request) {
 	}
 	mine := r.URL.Query().Get("mine") == "true"
 	state := r.URL.Query().Get("state")
-	out := []runView{}
+	limit := listMax
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > listMax {
+			apiError(w, http.StatusBadRequest, "invalid", "limit: 1 to "+strconv.Itoa(listMax))
+			return
+		}
+		limit = n
+	}
+	out, more := []runView{}, false
 	for _, run := range list {
 		if (mine && run.Submitter != id.Subject) || (state != "" && string(run.State) != state) {
 			continue
 		}
+		if len(out) == limit {
+			more = true
+			break
+		}
 		out = append(out, view(run))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"applications": out})
+	writeJSON(w, http.StatusOK, map[string]any{"applications": out, "more": more})
+}
+
+// listMax is the most runs GET /v1/applications returns, and the most it looks through.
+const listMax = 200
+
+// specView is GET /v1/applications/{id}/spec: the run's spec as POST /v1/applications takes it, to
+// submit a new run with the same settings ("Run again"). Its inline code is there until
+// sessions.resultRetention clears it; then CodeCleared is true and the spec has no code.
+type specView struct {
+	Spec        runs.Spec `json:"spec"`
+	CodeCleared bool      `json:"codeCleared"`
+}
+
+// spec is for whoever may read the run's log (mayManage): the spec carries its code and arguments.
+func (a Applications) spec(w http.ResponseWriter, r *http.Request) {
+	run, id, ok := a.load(w, r)
+	if !ok {
+		return
+	}
+	if !mayManage(id, run) {
+		apiError(w, http.StatusForbidden, "forbidden", "only the run's submitter, a workspace owner or a platform operator can read its code and settings")
+		return
+	}
+	s := run.Spec.Spec
+	m := s.Main
+	cleared := m.InlinePython == "" && m.InlinePythonSHA256 != "" || m.InlineScala == "" && m.InlineScalaSHA256 != ""
+	s.Main.InlinePythonBytes, s.Main.InlinePythonSHA256, s.Main.InlineScalaBytes, s.Main.InlineScalaSHA256 = 0, "", 0, ""
+	writeJSON(w, http.StatusOK, specView{Spec: s, CodeCleared: cleared})
 }
 
 // load returns the run named in the path if it belongs to the caller's workspace. A run in

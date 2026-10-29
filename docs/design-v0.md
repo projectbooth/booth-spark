@@ -310,7 +310,8 @@ The interface is served on the ordinary gateway route `/modules/spark/v1/…` (b
 | Endpoint | What it does |
 |---|---|
 | `POST /v1/applications` | `{name, main: {python: {backendId, path}} \| {jar: {backendId, path}, mainClass} \| {inlinePython: "<≤256 KiB>"}, args[], resources: {driver: {cores, memory}, executors: {min, max, cores, memory}}, conf: {…allowlisted keys only}, dataAccess: {database, lakehouse, storage: [{backendId, path, access}]}, maxDuration}` returns 201 with `{id, state, …}` |
-| `GET /v1/applications[?state=&mine=true]`, `GET /v1/applications/{id}` | `state`: `pending → running → succeeded \| failed \| stopped`, with reason, times and resources |
+| `GET /v1/applications[?state=&mine=true&limit=]`, `GET /v1/applications/{id}` | `state`: `pending → running → succeeded \| failed \| stopped`, with reason, times and resources; while pending, `waitingReason` (added 2026-10-29, below). `limit` and `more`: a page of the newest |
+| `GET /v1/applications/{id}/spec` | (added 2026-10-29, below) the run's spec as `POST` takes it, code included until retention clears it, for "Run again"; item 3's rule |
 | `POST /v1/applications/{id}/stop` | stop (item 3's rule) |
 | `GET /v1/applications/{id}/logs?tail=` | driver log: live while running, the last 1 MiB after it ends (kept in the module's own database) |
 | `POST /v1/sessions`, `GET`, `POST …/stop` | the same resource and data-access body; `idleTimeout` |
@@ -966,3 +967,34 @@ anything; managing clusters is a separate question (docs/design-clusters.md).
   Showing how many executors a run holds right now would need `list` on pods in its namespace: the
   run controller has only `create` and `get` there. The page shows each run's configured range
   instead (docs/design-clusters.md, section 4).
+
+## As built: the runs page from the 0.4.1 smoke test, 2026-10-29
+
+Four small changes from the user's 0.4.1 smoke test. The API changes are additive: one optional
+query parameter, two optional response fields and one read-only endpoint.
+
+- **Sessions above Applications, and Applications a page at a time.** The page asks for
+  `GET /v1/applications?limit=20`, then 40, and so on with "Show more", newest first; `more` says
+  whether there are others. `limit` applies after the `state` and `mine` filters, among the
+  workspace's 200 newest, as before. Without `limit` the list is as it was. The Clusters section
+  asks for the pending and running applications separately, so it still shows every live run.
+- **Run again with these settings.** `GET /v1/applications/{id}/spec` gives back the run's spec as
+  `POST /v1/applications` takes it: entry point, inline code, arguments, resources, conf, data access
+  and `maxDuration`. It is for whoever may read the run's log (item 3), since the spec carries its
+  code. The page opens New application filled in from it (`#/new/<id>`), and submitting starts a new
+  run; nothing is ever sent to the old one. Once sessions.resultRetention has cleared the code
+  (ADR 0110 step 5), `codeCleared` is true, the spec has no code, and the page says so and fills in
+  only the settings. A Python or Scala file entry point is kept as it was; the form shows it read-only.
+- **Lakehouse hints,** page only. On New application, code that names `lakehouse.` with the
+  lakehouse box off shows a warning, and the submit still goes. On a failed run's page, a driver
+  log with `REQUIRES_SINGLE_PART_NAMESPACE` naming `` `lakehouse` `` shows a one-line hint that the
+  run had no lakehouse data access.
+- **Why a pending run waits: `waitingReason`.** A new optional field, not the existing `reason`, so
+  `reason` keeps meaning why a run ended. The `waiting_reason` column (migration 0009, nullable)
+  holds:
+  - `resolving data access (will retry): …` while the controller retries resolving a run's data
+    access, which before reached only the backend's log;
+  - the driver pod's scheduling message (`not scheduled: …`) while it waits for a node.
+
+  The state stays `pending`. The reason is written only when it changes, and cleared when the run
+  launches, starts or ends.

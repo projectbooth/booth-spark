@@ -108,6 +108,14 @@ func (c *Controller) finish(ctx context.Context, r Run, st State, reason string)
 	return c.Cluster.Delete(ctx, r.Namespace)
 }
 
+// waiting records why a pending run still waits, when that changed ("" clears it).
+func (c *Controller) waiting(ctx context.Context, r Run, why string) error {
+	if truncate(why, 500) == r.WaitingReason {
+		return nil
+	}
+	return c.Store.SetWaiting(ctx, r.ID, why)
+}
+
 func (c *Controller) step(ctx context.Context, r Run) error {
 	now := c.Now()
 	if r.StopRequested {
@@ -126,7 +134,11 @@ func (c *Controller) step(ctx context.Context, r Run) error {
 				if now.Sub(r.CreatedAt) > c.PendingTimeout {
 					return c.finish(ctx, r, Failed, "could not start: resolving its data access: "+err.Error())
 				}
-				return fmt.Errorf("resolving data access (will retry): %w", err)
+				why := "resolving data access (will retry): " + err.Error()
+				if werr := c.waiting(ctx, r, why); werr != nil {
+					log.Printf("runs: %s: recording why it waits: %v", r.ID, werr)
+				}
+				return errors.New(why)
 			}
 			if err := c.Store.SetDataPlan(ctx, r.ID, plan); err != nil {
 				return err
@@ -173,6 +185,9 @@ func (c *Controller) step(ctx context.Context, r Run) error {
 	case d.Phase == corev1.PodPending:
 		if now.Sub(r.CreatedAt) > c.PendingTimeout {
 			return c.finish(ctx, r, Failed, fmt.Sprintf("the driver didn't start within %s (%s)", c.PendingTimeout, d.Reason))
+		}
+		if r.State == Pending {
+			return c.waiting(ctx, r, d.Reason)
 		}
 	case d.Phase == corev1.PodRunning:
 		if r.Kind == "session" {

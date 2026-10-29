@@ -1,33 +1,24 @@
 import { useState, type FormEvent } from "react";
-import { api, live, type Me, type Run, type StorageLocation } from "./api";
+import { api, live, type FileRef, type Me, type Run, type Spec, type SpecView, type StorageLocation } from "./api";
 import { Badge, ErrorBox, Field, Hint, Pre, when } from "./components";
 import { go, useLoad } from "./hooks";
 import { ClusterSection, Explainer, OriginLabel, explain, ownerOf, startOf } from "./overview";
 
 const anyLive = (rs: Run[]) => rs.some((r) => live(r.state));
 
-/** The workspace's applications, and the sessions this person may see. */
+/** How many applications the runs page shows at a time. */
+export const pageSize = 20;
+
+/** The sessions this person may see, then the workspace's applications, newest first, a page at a time. */
 export function RunsPage({ me }: { me: Me }) {
-  const apps = useLoad(api.applications, [], 5000, anyLive);
+  const [pages, setPages] = useState(1);
+  const apps = useLoad(() => api.applicationsPage(pages * pageSize), [pages], 5000, (p) => anyLive(p.runs));
+  // The Clusters section counts every live application, on whichever page.
+  const liveApps = useLoad(api.liveApplications, [], 5000, anyLive);
   const sessions = useLoad(api.sessions, [], 5000, anyLive);
   return (
     <>
       <Explainer me={me} />
-      <section>
-        <div className="section-head">
-          <div className="title">
-            <h2>Applications</h2>
-            <Hint text={explain.application} />
-          </div>
-          {me.canSubmit && (
-            <button type="button" onClick={() => go("new")}>
-              New application
-            </button>
-          )}
-        </div>
-        <ErrorBox error={apps.error} />
-        <RunTable runs={apps.value} kind="applications" empty="No applications in this workspace yet." />
-      </section>
       <section>
         <div className="section-head">
           <div className="title">
@@ -44,12 +35,37 @@ export function RunsPage({ me }: { me: Me }) {
         <ErrorBox error={sessions.error} />
         <RunTable runs={sessions.value} kind="sessions" empty="No sessions you can see." />
       </section>
+      <section>
+        <div className="section-head">
+          <div className="title">
+            <h2>Applications</h2>
+            <Hint text={explain.application} />
+          </div>
+          {me.canSubmit && (
+            <button type="button" onClick={() => go("new")}>
+              New application
+            </button>
+          )}
+        </div>
+        <ErrorBox error={apps.error} />
+        <RunTable runs={apps.value?.runs} kind="applications" empty="No applications in this workspace yet." />
+        {apps.value && (apps.value.more || pages > 1) && (
+          <div className="pager">
+            <span className="muted">The newest {apps.value.runs.length}.</span>
+            {apps.value.more && (
+              <button type="button" className="secondary" onClick={() => setPages(pages + 1)}>
+                Show more
+              </button>
+            )}
+          </div>
+        )}
+      </section>
       {!me.canSubmit && (
         <p className="muted">
           Your role can see runs but not submit them: that needs {me.submitMinRole} or above.
         </p>
       )}
-      <ClusterSection apps={apps.value} sessions={sessions.value} />
+      <ClusterSection apps={liveApps.value} sessions={sessions.value} />
     </>
   );
 }
@@ -93,13 +109,19 @@ function RunTable({ runs, kind, empty }: { runs?: Run[]; kind: "applications" | 
               <OriginLabel run={r} />
             </td>
             <td>{startOf(r)}</td>
-            <td className="reason">{r.reason}</td>
+            <td className="reason">
+              {r.reason}
+              {waiting(r) && <span className="muted">waiting: {r.waitingReason}</span>}
+            </td>
           </tr>
         ))}
       </tbody>
     </table>
   );
 }
+
+/** Whether a run is pending with a reason it still waits (state stays pending). */
+const waiting = (r: Run) => r.state === "pending" && !!r.waitingReason;
 
 function Facts({ run }: { run: Run }) {
   const d = run.dataAccess;
@@ -113,6 +135,12 @@ function Facts({ run }: { run: Run }) {
         <>
           <dt>Reason</dt>
           <dd className="reason">{run.reason}</dd>
+        </>
+      )}
+      {waiting(run) && (
+        <>
+          <dt>Waiting</dt>
+          <dd className="reason">{run.waitingReason}</dd>
         </>
       )}
       <dt>Submitted by</dt>
@@ -251,7 +279,20 @@ export function ApplicationPage({ id, me }: { id: string; me: Me }) {
           Stop
         </button>
       )}
+      {me.canSubmit && mayLog && (
+        <p>
+          <button type="button" className="secondary" onClick={() => go("new/" + encodeURIComponent(id))}>
+            Run again with these settings
+          </button>
+          <Hint text="Opens New application filled in with this run's code and settings. Submitting starts a new run; this one stays as it is." />
+        </p>
+      )}
       <ErrorBox error={busy} />
+      {r.state === "failed" && !r.dataAccess?.lakehouse && noLakehouseInLog(String(logs.value ?? "")) && (
+        <p className="warning" role="note">
+          Hint: this run had no lakehouse data access, so Spark read <code>lakehouse</code> as a namespace, not a catalog.
+        </p>
+      )}
       <h3>Driver log</h3>
       {!mayLog ? (
         <p className="muted">Its submitter, the workspace's owners and platform operators can read its log.</p>
@@ -263,6 +304,12 @@ export function ApplicationPage({ id, me }: { id: string; me: Me }) {
     </section>
   );
 }
+
+/** Spark's error for `lakehouse.x.y` without the lakehouse catalog: a namespace in spark_catalog. */
+export const noLakehouseInLog = (log: string) => /REQUIRES_SINGLE_PART_NAMESPACE[^\n]*`lakehouse`/.test(log);
+
+/** Whether code names the lakehouse catalog (`lakehouse.` as a word). */
+export const mentionsLakehouse = (code: string) => /(^|[^\w.])lakehouse\./.test(code);
 
 function DataFields({ me, value, onChange }: { me: Me; value: DataChoice; onChange: (v: DataChoice) => void }) {
   const offered = me.limits?.dataAccess;
@@ -350,9 +397,10 @@ function resources(c: ResourceChoice) {
   };
 }
 
-/** The application's entry point as the form holds it (docs/design-scala.md, section 2 (b)). */
+/** The application's entry point as the form holds it (docs/design-scala.md, section 2 (b)). "file"
+ * is a Python or Scala file in booth-storage, which only Run again fills in (`file`). */
 export interface EntryChoice {
-  kind: "python" | "scala" | "jar";
+  kind: "python" | "scala" | "jar" | "file";
   code: string;
   scalaCode: string;
   backendId: string;
@@ -360,33 +408,40 @@ export interface EntryChoice {
   mainClass: string;
   args: string;
   sha256: string;
+  file?: { language: "python" | "scala"; ref: FileRef };
 }
 
 /** The form's entry point as the API's main and args. */
 export function entryPoint(c: EntryChoice): { main: Record<string, unknown>; args?: string[] } {
-  if (c.kind === "python") return { main: { inlinePython: c.code } };
-  if (c.kind === "scala") return { main: { inlineScala: c.scalaCode } };
   const args = c.args
     .split("\n")
     .map((a) => a.trim())
     .filter(Boolean);
-  return {
-    main: {
-      jar: { backendId: c.backendId.trim(), path: c.path.trim().replace(/^\/+/, ""), sha256: c.sha256.trim().toLowerCase() || undefined },
-      mainClass: c.mainClass.trim(),
-    },
-    args: args.length ? args : undefined,
-  };
+  const withArgs = (main: Record<string, unknown>) => ({ main, args: args.length ? args : undefined });
+  if (c.kind === "python") return withArgs({ inlinePython: c.code });
+  if (c.kind === "scala") return withArgs({ inlineScala: c.scalaCode });
+  if (c.kind === "file" && c.file) return withArgs({ [c.file.language]: c.file.ref });
+  return withArgs({
+    jar: { backendId: c.backendId.trim(), path: c.path.trim().replace(/^\/+/, ""), sha256: c.sha256.trim().toLowerCase() || undefined },
+    mainClass: c.mainClass.trim(),
+  });
 }
 
 function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onChange: (v: EntryChoice) => void }) {
   const storage = !!me.limits?.dataAccess?.storage;
   const scala = !!me.limits?.languages?.includes("scala");
   const set = (over: Partial<EntryChoice>) => onChange({ ...value, ...over });
+  const file = value.file;
   return (
     <>
       <fieldset>
         <legend>Entry point</legend>
+        {file && (
+          <label className="check">
+            <input type="radio" name="entry" checked={value.kind === "file"} onChange={() => set({ kind: "file" })} /> The earlier run's{" "}
+            {file.language === "python" ? "Python" : "Scala"} file in Storage
+          </label>
+        )}
         <label className="check">
           <input type="radio" name="entry" checked={value.kind === "python"} onChange={() => set({ kind: "python" })} /> PySpark code
         </label>
@@ -401,7 +456,15 @@ function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onCh
         </label>
         {!storage && <p className="muted">A JAR is read from booth-storage, which this install doesn't offer runs.</p>}
       </fieldset>
-      {value.kind === "python" ? (
+      {value.kind === "file" && file ? (
+        <p>
+          <span className="mono">
+            {file.ref.backendId}/{file.ref.path}
+          </span>
+          {file.ref.sha256 && <span className="muted mono"> sha256 {file.ref.sha256.slice(0, 12)}…</span>}
+          <span className="muted"> — read as you when the run starts{file.ref.sha256 && ", and refused if its bytes changed"}.</span>
+        </p>
+      ) : value.kind === "python" ? (
         <Field label="PySpark code" hint="At most 256 KiB. It runs as you, in its own namespace.">
           <textarea className="code" rows={12} value={value.code} onChange={(e) => set({ code: e.target.value })} />
         </Field>
@@ -425,40 +488,135 @@ function EntryFields({ me, value, onChange }: { me: Me; value: EntryChoice; onCh
           <Field label="Main class" hint="Fully qualified, e.g. com.example.Main. Built for Scala 2.13 against Spark 4.1.3 (provided).">
             <input required value={value.mainClass} onChange={(e) => set({ mainClass: e.target.value })} />
           </Field>
-          <Field label="Arguments" hint="One per line (optional)">
-            <textarea rows={3} value={value.args} onChange={(e) => set({ args: e.target.value })} />
-          </Field>
           <Field label="SHA-256" hint="Optional: the run refuses to start if the JAR's bytes don't hash to this">
             <input value={value.sha256} pattern="[0-9a-fA-F]{64}" onChange={(e) => set({ sha256: e.target.value })} />
           </Field>
         </>
       )}
+      <Field label="Arguments" hint="One per line (optional): sys.argv[1:] in Python, args in Scala, the main class's arguments in a JAR">
+        <textarea rows={3} value={value.args} onChange={(e) => set({ args: e.target.value })} />
+      </Field>
     </>
   );
 }
 
-export function NewApplicationPage({ me }: { me: Me }) {
-  const [name, setName] = useState("");
-  const [entry, setEntry] = useState<EntryChoice>({
-    kind: "python",
-    code: "from pyspark.sql import SparkSession\n\nspark = SparkSession.builder.getOrCreate()\nprint(spark.range(10).count())\n",
-    scalaCode: "// spark, sc, args and booth are already defined.\nprintln(spark.range(10).count())\n",
-    backendId: "",
-    path: "",
-    mainClass: "",
-    args: "",
-    sha256: "",
-  });
-  const [res, setRes] = useState<ResourceChoice>({ driver: "", max: String(me.limits?.defaultExecutors ?? ""), executor: "" });
-  const [data, setData] = useState<DataChoice>({ database: false, lakehouse: false, storage: "" });
+const blankEntry: EntryChoice = {
+  kind: "python",
+  code: "from pyspark.sql import SparkSession\n\nspark = SparkSession.builder.getOrCreate()\nprint(spark.range(10).count())\n",
+  scalaCode: "// spark, sc, args and booth are already defined.\nprintln(spark.range(10).count())\n",
+  backendId: "",
+  path: "",
+  mainClass: "",
+  args: "",
+  sha256: "",
+};
+
+/** An earlier run, for Run again: the run as the page shows it, and its spec. */
+export interface Prior {
+  run: Run;
+  view: SpecView;
+}
+
+/** What a spec sets that the form has no field for; Run again keeps it as it was. */
+interface Kept {
+  conf?: Record<string, string>;
+  maxDuration?: string;
+  minExecutors?: number;
+}
+
+/** The form filled in from an earlier run's spec: never its code once retention cleared it. */
+export function fromSpec(me: Me, { run, view }: Prior) {
+  const s: Spec = view.spec;
+  const m = s.main;
+  const entry: EntryChoice = { ...blankEntry, code: "", scalaCode: "", args: (s.args ?? []).join("\n") };
+  if (m.jar) {
+    Object.assign(entry, { kind: "jar", backendId: m.jar.backendId, path: m.jar.path, sha256: m.jar.sha256 ?? "", mainClass: m.mainClass ?? "" });
+  } else if (m.python || m.scala) {
+    entry.kind = "file";
+    entry.file = m.python ? { language: "python", ref: m.python } : { language: "scala", ref: m.scala! };
+  } else if (m.inlineScala !== undefined || run.main?.inlineScalaSha256) {
+    entry.kind = "scala";
+    entry.scalaCode = m.inlineScala ?? "";
+  } else {
+    entry.code = m.inlinePython ?? "";
+  }
+  const ex = s.resources?.executors;
+  const d = s.dataAccess;
+  const kept: Kept = { conf: s.conf, maxDuration: s.maxDuration, minExecutors: ex?.min };
+  return {
+    name: s.name,
+    entry,
+    res: {
+      driver: s.resources?.driver?.memory ?? "",
+      max: String(ex?.max ?? run.resources.maxExecutors ?? me.limits?.defaultExecutors ?? ""),
+      executor: ex?.memory ?? "",
+    },
+    data: {
+      database: !!d?.database,
+      lakehouse: !!d?.lakehouse,
+      storage: (d?.storage ?? []).map((l) => `${l.backendId}/${l.path}${l.access === "readwrite" ? " rw" : ""}`).join("\n"),
+    },
+    kept,
+  };
+}
+
+function keptText(k: Kept) {
+  return [
+    ...Object.entries(k.conf ?? {}).map(([key, v]) => `${key}=${v}`),
+    k.minExecutors ? `at least ${k.minExecutors} executor${k.minExecutors === 1 ? "" : "s"}` : "",
+    k.maxDuration ? `at most ${k.maxDuration}` : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+/** New application, blank or filled in from an earlier run (#/new/<id>, Run again). */
+export function NewApplicationPage({ me, from }: { me: Me; from?: string }) {
+  const prior = useLoad(
+    () =>
+      from
+        ? Promise.all([api.application(from), api.applicationSpec(from)]).then(([run, view]): Prior => ({ run, view }))
+        : Promise.resolve(undefined),
+    [from],
+  );
+  if (!from) return <ApplicationForm me={me} />;
+  if (prior.error)
+    return (
+      <section>
+        <p>
+          <a href="#/">← Runs</a>
+        </p>
+        <ErrorBox error={prior.error} />
+      </section>
+    );
+  if (!prior.value) return <p className="muted">Loading…</p>;
+  return <ApplicationForm me={me} prior={prior.value} />;
+}
+
+function ApplicationForm({ me, prior }: { me: Me; prior?: Prior }) {
+  const [init] = useState(() => (prior ? fromSpec(me, prior) : undefined));
+  const [name, setName] = useState(init?.name ?? "");
+  const [entry, setEntry] = useState<EntryChoice>(init?.entry ?? blankEntry);
+  const [res, setRes] = useState<ResourceChoice>(init?.res ?? { driver: "", max: String(me.limits?.defaultExecutors ?? ""), executor: "" });
+  const [data, setData] = useState<DataChoice>(init?.data ?? { database: false, lakehouse: false, storage: "" });
   const [error, setError] = useState<Error | undefined>();
   const [busy, setBusy] = useState(false);
+  const kept: Kept = init?.kept ?? {};
+  const code = entry.kind === "python" ? entry.code : entry.kind === "scala" ? entry.scalaCode : "";
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
+    const r = resources(res);
     api
-      .submit({ name, ...entryPoint(entry), resources: resources(res), dataAccess: dataAccess(data) })
-      .then((r) => go("applications/" + encodeURIComponent(r.id)), setError)
+      .submit({
+        name,
+        ...entryPoint(entry),
+        resources: { ...r, executors: { ...r.executors, min: kept.minExecutors } },
+        conf: kept.conf,
+        maxDuration: kept.maxDuration,
+        dataAccess: dataAccess(data),
+      })
+      .then((run) => go("applications/" + encodeURIComponent(run.id)), setError)
       .finally(() => setBusy(false));
   };
   return (
@@ -467,12 +625,40 @@ export function NewApplicationPage({ me }: { me: Me }) {
         <a href="#/">← Runs</a>
       </p>
       <h2>New application</h2>
+      {prior && (
+        <div className="notice" role="status">
+          Filled in from <a href={"#/applications/" + encodeURIComponent(prior.run.id)}>{prior.run.name}</a>{" "}
+          <span className="mono muted">{prior.run.id}</span>. Submitting starts a new run; that one stays as it is.
+          {prior.view.codeCleared && (
+            <p>
+              Its code was cleared{prior.run.contentClearedAt && <> {when(prior.run.contentClearedAt)}</>} (sessions.resultRetention), so
+              only its settings are filled in: add the code again.
+            </p>
+          )}
+          {keptText(kept) && <p className="muted">Also kept from it: {keptText(kept)}.</p>}
+        </div>
+      )}
       <Field label="Name">
         <input required value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <EntryFields me={me} value={entry} onChange={setEntry} />
       <Resources me={me} value={res} onChange={setRes} />
       <DataFields me={me} value={data} onChange={setData} />
+      {mentionsLakehouse(code) && !data.lakehouse && (
+        <p className="warning" role="status">
+          {me.limits?.dataAccess?.lakehouse ? (
+            <>
+              The code mentions <code>lakehouse.</code> but the lakehouse box is off: without it the run has no <code>lakehouse</code> catalog
+              and Spark fails with REQUIRES_SINGLE_PART_NAMESPACE. You can still submit.
+            </>
+          ) : (
+            <>
+              The code mentions <code>lakehouse.</code>, but this install offers runs no lakehouse access, so Spark will fail with
+              REQUIRES_SINGLE_PART_NAMESPACE.
+            </>
+          )}
+        </p>
+      )}
       <ErrorBox error={error} />
       <button type="submit" disabled={busy}>
         Submit

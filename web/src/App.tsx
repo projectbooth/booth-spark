@@ -18,7 +18,8 @@ export default function App() {
       page = route[1] ? <SessionPage id={route[1]} me={m} /> : <RunsPage me={m} />;
       break;
     case "new":
-      page = m.canSubmit ? <NewApplicationPage me={m} /> : <RunsPage me={m} />;
+      // #/new/<id>: Run again, filled in from that run.
+      page = m.canSubmit ? <NewApplicationPage key={route[1] ?? ""} me={m} from={route[1]} /> : <RunsPage me={m} />;
       break;
     case "new-session":
       page = m.canSubmit ? <NewSessionPage me={m} /> : <RunsPage me={m} />;
