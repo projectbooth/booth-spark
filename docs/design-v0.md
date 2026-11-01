@@ -55,8 +55,9 @@ the operator anyway, the fallback is chart 2.5.2 pinned by digest, with the webh
     booth-streamlit's DuckDB-extension precedent.
 - **Backend:** builder `golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c`,
   runtime `gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab`.
-- **Credential sidecar:** `ghcr.io/projectbooth/credential-sidecar@sha256:6a0a795efd27f165e0714beb163d91f5c2feff55cfdc6f287aee979ae02cce14`,
-  the digest booth-api, booth-streamlit, booth-notebooks and booth-pipeline already pin.
+- **Credential sidecar:** `ghcr.io/projectbooth/credential-sidecar@sha256:3499a83bd85ce2f9037ccabc7997ab18bd0aee7b2119cf2b7fcc5af8909050c0`,
+  0.3.9 from booth-core v0.3.9 (a 45 s broker call timeout by default; booth-spark's broker forward
+  and planner allow 60 s, above it and core's 30 s).
 
 **What runs when:**
 - **Always:** the backend Deployment, one replica, about 64Mi.

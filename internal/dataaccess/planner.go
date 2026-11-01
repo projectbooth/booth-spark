@@ -37,11 +37,16 @@ func refusal(r Run, err error) error {
 	return runs.DataRefusal("%v", err)
 }
 
+// plannerTimeout bounds each call Prepare makes to core (the broker's s3 leases, the warehouse
+// lookup). Above core's own 30 s provider limit, so a slow mint ends with core's answer, not this
+// client's.
+const plannerTimeout = 60 * time.Second
+
 func (p *Planner) client() *http.Client {
 	if p.HTTP != nil {
 		return p.HTTP
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: plannerTimeout}
 }
 
 // Prepare implements runs.Data.
