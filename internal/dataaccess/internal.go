@@ -143,6 +143,13 @@ type brokerRequest struct {
 	Scope  json.RawMessage `json:"scope"`
 }
 
+// brokerTimeout bounds one broker call forwarded for a credential sidecar. It sits above both
+// limits on the far side: core's provider gives up at 30 s (minting a SeaweedFS IAM key takes about
+// 6 s, more under load), and the sidecar itself at 45 s (credential-sidecar 0.3.9's
+// -broker-timeout-seconds default). So core's answer, or the sidecar hanging up, always comes first,
+// and this hop never turns a slow mint into its own 502.
+const brokerTimeout = 60 * time.Second
+
 func (in *Internal) broker(w http.ResponseWriter, r *http.Request) {
 	run, jwt, ok := in.byToken(w, r)
 	if !ok {
@@ -172,7 +179,7 @@ func (in *Internal) broker(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unknown credential kind"})
 		return
 	}
-	in.forward(w, r, http.MethodPost, "/api/credentials", "", bytes.NewReader(body), jwt, run.Workspace, 30*time.Second, 1<<20)
+	in.forward(w, r, http.MethodPost, "/api/credentials", "", bytes.NewReader(body), jwt, run.Workspace, brokerTimeout, 1<<20)
 }
 
 // lakehouse forwards Iceberg's REST catalog to booth-lakehouse, which enforces the caller's role on

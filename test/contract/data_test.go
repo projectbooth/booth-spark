@@ -34,7 +34,7 @@ func TestChart_DataAccess(t *testing.T) {
 		t.Fatalf("allowlist %s: %v", vars["allowed"], err)
 	}
 	want := []string{runtimeImage, "ghcr.io/projectbooth/booth-spark:0.1.0",
-		"ghcr.io/projectbooth/credential-sidecar@sha256:6a0a795efd27f165e0714beb163d91f5c2feff55cfdc6f287aee979ae02cce14"}
+		"ghcr.io/projectbooth/credential-sidecar@sha256:3499a83bd85ce2f9037ccabc7997ab18bd0aee7b2119cf2b7fcc5af8909050c0"}
 	if !reflect.DeepEqual(allowed, want) {
 		t.Errorf("run-pods images = %v, want exactly %v", allowed, want)
 	}

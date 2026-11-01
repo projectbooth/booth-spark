@@ -173,10 +173,10 @@ dataAccess:
   enabled: false
   # booth-core's in-cluster address: the broker (/api/credentials) and the gateway (/modules/...).
   coreUrl: http://booth-core.booth-system.svc:8080
-  # booth-core's credential sidecar (ADR 0095), digest-pinned: the digest booth-streamlit,
-  # booth-api, booth-notebooks and booth-pipeline pin.
+  # booth-core's credential sidecar (ADR 0095), digest-pinned: 0.3.9, from booth-core v0.3.9, whose
+  # broker calls wait up to 45 s by default (minting a SeaweedFS IAM key takes several seconds).
   sidecar:
-    image: ghcr.io/projectbooth/credential-sidecar@sha256:6a0a795efd27f165e0714beb163d91f5c2feff55cfdc6f287aee979ae02cce14
+    image: ghcr.io/projectbooth/credential-sidecar@sha256:3499a83bd85ce2f9037ccabc7997ab18bd0aee7b2119cf2b7fcc5af8909050c0
   # booth-database is installed: a run asking for `database` gets the postgres sidecar in every pod
   # (JDBC reads run on executors), DATABASE_URL and JDBC_DATABASE_URL, and an egress rule to
   # booth-database's Postgres pods (match your install's namespace and labels).

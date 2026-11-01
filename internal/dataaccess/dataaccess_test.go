@@ -361,3 +361,75 @@ func TestInternal(t *testing.T) {
 		t.Errorf("main for an ended run: %d", rec.Code)
 	}
 }
+
+// deadlineTransport records each outgoing request's context deadline, then sends it on.
+type deadlineTransport struct {
+	mu   sync.Mutex
+	left []time.Duration // the deadline, as time left when the request went out; 0: none
+}
+
+func (d *deadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	var left time.Duration
+	if dl, ok := r.Context().Deadline(); ok {
+		left = time.Until(dl)
+	}
+	d.mu.Lock()
+	d.left = append(d.left, left)
+	d.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// The broker forward and the planner both allow 60 s: clearly above core's provider (30 s) and the
+// credential sidecar's own broker timeout (45 s, credential-sidecar 0.3.9), so a slow SeaweedFS IAM
+// mint ends with core's answer or the sidecar hanging up, never with this backend's 502.
+func TestBrokerTimeouts(t *testing.T) {
+	const coreProvider, sidecar = 30 * time.Second, 45 * time.Second
+	for name, d := range map[string]time.Duration{"brokerTimeout": brokerTimeout, "plannerTimeout": plannerTimeout} {
+		if d != 60*time.Second || d-sidecar < 10*time.Second || d <= coreProvider {
+			t.Errorf("%s = %s, want 60s: at least 10 s above the sidecar's %s and above core's %s", name, d, sidecar, coreProvider)
+		}
+	}
+	if got := (&Planner{}).client().Timeout; got != plannerTimeout {
+		t.Errorf("the planner's default client times out after %s, want %s", got, plannerTimeout)
+	}
+
+	f := newFakeCore(t)
+	bearer := strings.Repeat("b", 64)
+	live := runs.Run{ID: "r1", Workspace: "acme", Submitter: "u-editor", State: runs.Running, DataBearer: bearer, Data: &runs.DataPlan{Role: "editor"}}
+	tr := &deadlineTransport{}
+	in := &Internal{Store: fakeStore{map[string]runs.Run{"r1": live}}, Tokens: newTokens(f), CoreURL: f.srv.URL, HTTP: &http.Client{Transport: tr}}
+	h := in.Router()
+	tok, err := in.Tokens.Get(context.Background(), runOf(live))
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := func(ctx context.Context) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/internal/broker/api/credentials",
+			strings.NewReader(`{"kind":"s3","access":"read","scope":{"backendId":"lake","path":"x"}}`)).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer "+tok.JWT)
+		req.Header.Set("X-Workspace", "acme")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// A sidecar that waits as long as it likes: the hop to core gets the whole 60 s, and core's
+	// answer is relayed.
+	if rec := broker(context.Background()); rec.Code != 201 {
+		t.Fatalf("broker: %d %s", rec.Code, rec.Body)
+	}
+	if left := tr.left[0]; left <= sidecar+10*time.Second || left > brokerTimeout {
+		t.Errorf("forwarded to core with %s left, want just under %s", left, brokerTimeout)
+	}
+
+	// Positive control: a sidecar that gives up sooner still bounds the hop, so its hanging up
+	// cancels the call to core rather than leaving it running.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if rec := broker(ctx); rec.Code != 201 {
+		t.Fatalf("broker, sooner caller: %d %s", rec.Code, rec.Body)
+	}
+	if left := tr.left[1]; left <= 0 || left > 2*time.Second {
+		t.Errorf("forwarded with %s left under a caller with 2s, want at most 2s", left)
+	}
+}
